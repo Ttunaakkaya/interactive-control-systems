@@ -94,9 +94,11 @@ class CartPolePlant:
                             Corresponds to 'd' in the A matrix; setting this
                             equal to 'd' closes the linear–nonlinear model gap.
         """
-        self.model.joint("slider").frictionloss[0] = cart_frictionloss
-        self.model.joint("hinge").frictionloss[0]  = pole_frictionloss
-        self.model.dof_damping[0]                  = cart_damping
+        slider_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "slider")
+        hinge_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "hinge")
+        self.model.dof_frictionloss[slider_id] = cart_frictionloss
+        self.model.dof_frictionloss[hinge_id]  = pole_frictionloss
+        self.model.dof_damping[slider_id]      = cart_damping
 
     def step(self, state: np.ndarray, u: float, dt: float) -> np.ndarray:
         """
