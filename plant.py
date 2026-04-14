@@ -1,11 +1,10 @@
 import numpy as np
-import control as ct
 
 
 class CartPolePlant:
     def __init__(self, m_c=1.0, m_p=0.1, l=0.5, g=9.81, d=0.0):
         """
-        Cart-Pole plant with full nonlinear dynamics — no MuJoCo dependency.
+        Cart-Pole plant with full nonlinear dynamics (pure Python, no external physics engine).
 
         Physics engine features:
             - Full nonlinear equations of motion (no small-angle approximation)
@@ -19,23 +18,28 @@ class CartPolePlant:
 
         Equations of motion (Lagrangian derivation):
         -----------------------------------------------
-        Let:  M = m_c + m_p,  m = m_p,  L = l (half-length to tip)
+        Let:  M = m_c + m_p,  m = m_p,  L = l (length to tip)
               θ  = pole angle from vertical (0 = upright)
               x  = cart position
 
-        Denominator (inertia coupling term):
-            den = M - m·cos²θ
+        Lagrangian:
+            T = ½·M·ẋ² + m·L·ẋ·θ̇·cosθ + ½·m·L²·θ̇²
+            V = −m·g·L·cosθ
 
-        Cart acceleration:
-            ẍ = [u - m·L·θ̈·cosθ + m·L·θ̇²·sinθ - b_v·ẋ - F_c·sign(ẋ)] / M
-              (solved jointly with pole equation)
+        Euler-Lagrange equations yield two coupled 2nd-order ODEs.
+        Solving the 2×2 system in (ẍ, θ̈):
+
+        Denominator (inertia coupling — always positive for any θ):
+            den = m_c + m_p·sin²θ
+            Note: equivalent form M − m·cos²θ also appears in literature;
+                  both are identical via cos²θ = 1 − sin²θ.
 
         Full coupled solution:
-            ẍ  = [u + m·L·θ̇²·sinθ - m·g·sinθ·cosθ - b_v·ẋ - F_c·sign(ẋ)] / den
-            θ̈  = [g·sinθ - cosθ·ẍ] / L
+            ẍ  = [u − F_fric + m·L·θ̇²·sinθ − m·g·sinθ·cosθ] / den
+            θ̈  = [(M)·g·sinθ − cosθ·(u − F_fric + m·L·θ̇²·sinθ)] / (L·den)
 
-        This is the exact same system MuJoCo solves via its constraint engine,
-        with the same RK4 integration accuracy at the same 2 ms sub-step rate.
+        Integration: 4th-order Runge-Kutta at 2 ms sub-steps (500 Hz).
+        No small-angle approximation — valid for any θ ∈ (−π, π).
 
         Parameters
         ----------
@@ -57,7 +61,7 @@ class CartPolePlant:
         self._viscous  = 0.0   # b_v  (N·s/m)  — velocity-proportional drag
         self._coulomb  = 0.0   # F_c  (N)       — constant opposing friction
 
-        # Internal sub-step size (matches MuJoCo default)
+        # Internal sub-step size — 500 Hz physics rate
         self._dt_internal = 0.002   # 2 ms → 500 Hz physics rate
 
         # ------------------------------------------------------------------ #
@@ -76,12 +80,9 @@ class CartPolePlant:
         self.B = np.array([[0.0], [1.0/Mt], [0.0], [-1.0/(Mt*l)]])
         self.C = np.array([[1.0, 0.0, 0.0, 0.0],
                            [0.0, 0.0, 1.0, 0.0]])
-        self.D = np.zeros((2, 1))
-
-        self.linear_sys = ct.ss(self.A, self.B, self.C, self.D)
 
     # ---------------------------------------------------------------------- #
-    #  Friction API — matches MuJoCo set_friction() interface exactly         #
+    #  Friction API                                                            #
     # ---------------------------------------------------------------------- #
     def set_friction(self, cart_frictionloss: float = 0.0,
                      pole_frictionloss: float = 0.0,
@@ -103,7 +104,8 @@ class CartPolePlant:
         (frictionless pivot is the standard assumption for this system).
 
         These forces enter the equations of motion directly at the physics
-        level — equivalent to MuJoCo's dof_frictionloss / dof_damping.
+        level — applied inside the RK4 integrator at every 2 ms sub-step,
+        not subtracted from the control input u.
         """
         self._viscous = cart_damping
         self._coulomb = cart_frictionloss
@@ -163,7 +165,7 @@ class CartPolePlant:
         return np.array([x_dot, x_ddot, theta_dot, theta_ddot])
 
     # ---------------------------------------------------------------------- #
-    #  RK4 integrator — identical accuracy to MuJoCo's RK4                   #
+    #  RK4 integrator                                                          #
     # ---------------------------------------------------------------------- #
     def _rk4_step(self, state: np.ndarray, u: float, dt: float) -> np.ndarray:
         """
@@ -178,7 +180,7 @@ class CartPolePlant:
 
         4th-order accurate: local truncation error O(dt⁵),
         global error O(dt⁴). At dt=2ms this gives sub-micrometre
-        position accuracy — same as MuJoCo's RK4 integrator.
+        position accuracy.
         """
         k1 = self._derivatives(state,               u)
         k2 = self._derivatives(state + 0.5*dt*k1,   u)
@@ -187,14 +189,14 @@ class CartPolePlant:
         return state + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
     # ---------------------------------------------------------------------- #
-    #  Public step — matches MuJoCo plant.step() interface exactly            #
+    #  Public step interface                                                   #
     # ---------------------------------------------------------------------- #
     def step(self, state: np.ndarray, u: float, dt: float) -> np.ndarray:
         """
         Advance the simulation by one control timestep dt.
 
         Sub-steps at the internal physics rate (2 ms) using RK4, then returns
-        the state at time t+dt. Identical interface to the MuJoCo version.
+        the state at time t+dt.
 
         Parameters
         ----------

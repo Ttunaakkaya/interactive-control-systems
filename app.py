@@ -2,7 +2,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import control as ct
 from plant import CartPolePlant
 from controller import (PIDController, StateSpaceController, LQRController,
@@ -30,28 +29,6 @@ def render_mermaid(code: str, height: int = 180):
 # ============================================================================ #
 #  Helpers                                                                      #
 # ============================================================================ #
-def matrix_to_html(M: np.ndarray, fmt: str = "{:.3f}") -> str:
-    """Render a numpy matrix as a dark-styled HTML table."""
-    rows = ""
-    for row in M:
-        cells = "".join(
-            f"<td style='padding:3px 8px;text-align:right;color:#38bdf8;"
-            f"font-family:monospace;font-size:0.82rem;'>{fmt.format(v)}</td>"
-            for v in row
-        )
-        rows += f"<tr>{cells}</tr>"
-    return (
-        "<table style='border-collapse:collapse;background:#0f172a;"
-        "border:1px solid #1e293b;border-radius:4px;'>"
-        f"{rows}</table>"
-    )
-
-def pole_label(p: complex) -> str:
-    if abs(p.imag) < 1e-6:
-        return f"{p.real:.3f}"
-    sign = "+" if p.imag >= 0 else "−"
-    return f"{p.real:.3f} {sign} {abs(p.imag):.3f}j"
-
 PLOT_THEME = dict(
     plot_bgcolor  = "rgba(0,0,0,0)",
     paper_bgcolor = "rgba(0,0,0,0)",
@@ -89,7 +66,7 @@ button[kind="header"]{background-color:rgba(56,189,248,0.1)!important;
 </style>
 <div class="main-header">Inverted Pendulum Digital Twin</div>
 <div class="sub-header">
-  MuJoCo Nonlinear Plant · Full-State Feedback · Optimal Control ·
+  Nonlinear RK4 Physics Engine · Full-State Feedback · Optimal Control ·
   Stochastic Estimation · Feedback Linearisation
 </div>
 <hr style="border-color:#1e293b;margin-top:5px;margin-bottom:15px;">
@@ -136,52 +113,114 @@ controller_type = st.sidebar.selectbox(
 with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
     if controller_type == "PID (Classical)":
         render_mermaid("""flowchart LR
-            R((Target))-->Sum{+}
-            Sum-->|Pos Error|C[PID]
-            C-->|Force|P[Plant]
-            P-->|Position|Y((Output))
-            P--->|-|Sum""")
+            R((x_ref))-->|+|Sum{Σ}
+            Sum-->|e|C[PID]
+            C-->|u|P[Plant]
+            P-->|x|Sum
+            style Sum fill:#1e293b,stroke:#38bdf8""")
         st.markdown(r"""
-        **SISO — wired to cart POSITION error (metres).**
-        $u = K_p e + K_i\int e\,dt + K_d\dot{e}$
+        **Single-Input Single-Output (SISO) control** — error-driven correction.
 
-        ⚠️ No explicit angle feedback. Cannot stabilise the upright
-        equilibrium on its own — demonstrates the SISO limitation.
+        $$u(t) = K_p\,e + K_i\!\int_0^t\! e\,d\tau + K_d\,\dot{e}$$
+
+        where $e = x_{ref} - x_{cart}$ (metres).
+
+        **Structural limitation:** PID observes only one output (cart position).
+        The inverted pendulum has four states — $[x,\,\dot x,\,\theta,\,\dot\theta]$.
+        Without explicit angle feedback, the controller cannot enforce the unstable
+        upright equilibrium; it can only move the cart toward a position target.
+        A high $K_d$ may implicitly couple to angle dynamics via cart acceleration,
+        but this is fragile and parameter-sensitive.
+
+        **Role here:** Educational baseline — demonstrates why SISO control is
+        structurally insufficient for a 4-state unstable system.
         """)
     elif controller_type == "LQI (Integral Optimal Control)":
         render_mermaid("""flowchart LR
-            R((Target))-->Sum1{+}
-            Sum1-->|Error e|Int[∫]
-            Int-->|x_i|Ki[K_i]
-            Ki-->Sum2{+}
-            P[Plant]-->|State x|K[K]
-            K-->|-|Sum2
-            Sum2-->|u|P""")
+            R((x_ref))-->|+|Sum1{Σ}
+            Sum1-->|e|Int[∫ dt]
+            Int-->|x_i|Kaug[K_aug]
+            P[Plant]-->|x|Kaug
+            Kaug-->|u|P
+            P-->|-|Sum1""")
         st.markdown(r"""
-        **Augmented state:** $x_{aug}=[x,\dot x,\theta,\dot\theta,\int e]^\top$
+        **LQR augmented with integral action** on cart position error.
 
-        Integral term enforces zero steady-state error under constant
-        disturbances (Internal Model Principle).
-        ⚠️ High $Q_{int}$ + slow observer → integral windup.
+        Augmented state vector:
+        $$x_{aug} = \bigl[x,\;\dot x,\;\theta,\;\dot\theta,\;\textstyle\int e\,dt\bigr]^\top \in \mathbb{R}^5$$
+
+        The integral state accumulates $e = x - x_{ref}$ for as long as a
+        steady-state offset persists. The LQR gain on this state forces the
+        control signal to grow until the error is eliminated, regardless of
+        the disturbance magnitude — this is the **Internal Model Principle**.
+
+        **Cost function:** $J = \int_0^\infty (x_{aug}^\top Q_{aug}\,x_{aug} + u^\top R\,u)\,dt$
+
+        **$Q_{int}$ tuning guide:**
+        - Too small → slow disturbance rejection, large transient offset
+        - Too large → fast rejection but oscillatory, risk of integral windup
+        - Start at $Q_{int} \approx 0.3\,Q_{pos}$ and increase cautiously
+
+        ⚠️ If the observer has not yet converged, the integral accumulates
+        error based on a wrong state estimate — leading to windup instability.
+        Always verify observer convergence before increasing $Q_{int}$.
         """)
     else:
         render_mermaid("""flowchart LR
-            R((Target))-->N[Nr]
-            N-->Sum{+}
+            R((x_ref))-->Nr[Nr]
+            Nr-->|Nr·r|Sum{Σ}
             Sum-->|u|P[Plant]
             P-->|y|Obs[Observer]
-            Obs-->|x̂|K[K]
-            K--->|-|Sum""")
+            Obs-->|x̂|K[-K]
+            K-->|−K·x̂|Sum""")
         if controller_type == "Pole Placement (State-Space)":
             st.markdown(r"""
-            **Pole Placement:** specify $\zeta,\omega_n$ → compute $K$ via
-            Ackermann. Nr pre-filter ensures DC tracking. No cost on effort.
+            **Full-state feedback via direct pole placement.**
+
+            The desired closed-loop behaviour is specified as a second-order
+            prototype with damping ratio $\zeta$ and natural frequency $\omega_n$:
+
+            $$p_{1,2} = -\zeta\omega_n \pm j\,\omega_n\sqrt{1-\zeta^2}$$
+
+            Two auxiliary real poles ($p_3$, $p_4$) are placed well to the left
+            to ensure they do not dominate the response. The feedback gain $K$
+            is then computed via Ackermann's formula to enforce these locations.
+
+            **Pre-filter $N_r$:** scales the reference signal so that the
+            steady-state cart position matches the setpoint under nominal
+            (undisturbed) conditions.
+
+            **Limitation:** poles are placed by geometric specification — the
+            method provides no guarantee on actuator effort. Placing poles far
+            to the left demands arbitrarily large forces. Use LQR to impose an
+            explicit cost on control energy.
+
+            | $\zeta$ | Behaviour |
+            |---|---|
+            | $< 1$ | Underdamped — oscillatory transient |
+            | $= 1$ | Critically damped — fastest non-oscillatory response |
+            | $> 1$ | Overdamped — smooth but slow |
             """)
         else:
             st.markdown(r"""
-            **LQR:** minimise $J=\int(x'Qx+u'Ru)dt$.
-            Globally optimal for the linear model. Nr valid only under
-            zero disturbance — use LQI for wind/friction rejection.
+            **Optimal full-state feedback** via the Linear Quadratic Regulator.
+
+            Minimises the infinite-horizon quadratic cost:
+            $$J = \int_0^\infty \bigl(x^\top Q\,x + u^\top R\,u\bigr)\,dt$$
+
+            **Cost matrix design:**
+            $$Q = \text{diag}([Q_{pos},\;0.1,\;Q_{ang},\;0.1]), \quad R = [R_{weight}]$$
+
+            Increasing $Q_{pos}$ relative to $R$ tightens position tracking at
+            the cost of higher actuator effort. Increasing $Q_{ang}$ prioritises
+            angle stability. LQR finds the globally optimal $K$ for the linear
+            model — unlike pole placement, the trade-off between performance and
+            effort is mathematically explicit.
+
+            **Limitation:** the pre-filter $N_r$ is computed from the nominal
+            closed-loop DC gain and is only valid under zero disturbance. Under
+            continuous wind or friction, a permanent steady-state position error
+            is unavoidable. Use LQI to eliminate this offset.
             """)
 
 if controller_type == "PID (Classical)":
@@ -216,14 +255,32 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🧬 Nonlinear Dynamics")
 with st.sidebar.expander("ℹ️ Theory: Feedback Linearisation"):
     render_mermaid("""flowchart LR
-        C[Linear Controller]-->|v|FL[Inverse Dynamics]
-        P[Plant State]-->FL
-        FL-->|u|Plant""", height=130)
+        R((x_ref))-->LC[Linear Controller]
+        LC-->|v|Sum2{Σ}
+        P[Plant]-->|θ,θ̇|NL[Nonlinear\nCancellation]
+        NL-->|Δu|Sum2
+        Sum2-->|u=v+Δu|Plant2[Plant]""", height=150)
     st.markdown(r"""
-    Cancels Coriolis ($ml\dot\theta^2\sin\theta$) and gravity distortion
-    $\bigl(m_p g(\theta - \sin\theta\cos\theta)\bigr)$ in real-time, so the
-    inner linear controller sees a perfect $\dot x = Ax+Bu$ system.
-    Extends the controllable region from ~$20°$ to ~$40°$+.
+    **The linearisation problem:** all controllers in this simulator are
+    designed on the linearised model, which assumes $\sin\theta \approx \theta$
+    and $\cos\theta \approx 1$. This approximation is valid only for
+    $|\theta| \lesssim 20°$. Beyond this, two nonlinear terms become significant:
+
+    - **Coriolis force:** $m_p\,l\,\dot\theta^2\sin\theta$ — grows quadratically with angular velocity
+    - **Gravity distortion:** $m_p\,g\,(\theta - \sin\theta\cos\theta)$ — diverges from the linear approximation
+
+    **Feedback Linearisation** cancels these terms analytically in real time.
+    Given the virtual control signal $v$ from the linear controller, the
+    actual motor command is:
+
+    $$u = v - m_p l\,\dot\theta^2\sin\theta - m_p g\,(\theta - \sin\theta\cos\theta)$$
+
+    The plant then experiences $v$ as if it were operating in the linear
+    regime — extending the stabilisable region from ~$20°$ to ~$45°$+.
+
+    **Requirement:** accurate state feedback ($\theta$, $\dot\theta$).
+    If the observer has not converged, the cancellation uses wrong values
+    and may introduce additional error rather than removing it.
     """)
 use_fl = st.sidebar.checkbox("Enable Feedback Linearization", value=False)
 
@@ -232,8 +289,28 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🛤️ Motion Profiler")
 with st.sidebar.expander("ℹ️ Theory: Quintic Trajectory"):
     st.markdown(r"""
-    5th-order polynomial with zero vel/acc at endpoints.
-    Feedforward: $F_{ff}=(m_c+m_p)\,a_{ref}$ — proactive inertia compensation.
+    **The step input problem:** a step reference command demands an
+    instantaneous position change, which mathematically requires infinite
+    acceleration — and therefore infinite force. In practice this creates
+    large actuator spikes and excites the pendulum angle violently.
+
+    **Quintic trajectory planning** generates a smooth path from the
+    current position to the target by fitting a 5th-order polynomial with
+    zero velocity and acceleration at both endpoints:
+
+    $$p(\tau) = p_0 + \Delta p\,(10\tau^3 - 15\tau^4 + 6\tau^5), \quad \tau = t/T$$
+
+    This guarantees $v(0)=v(T)=0$ and $a(0)=a(T)=0$ — no impulsive forces.
+
+    **2-DOF Feedforward:** the planned acceleration $a_{ref}(t)$ is used
+    to compute a proactive feed-forward force:
+
+    $$F_{ff} = (m_c + m_p)\,a_{ref}$$
+
+    This inertia-compensation term is added to the feedback control signal,
+    so the feedback controller handles only the residual tracking error
+    rather than the full inertial demand. The result is significantly lower
+    control energy and smoother pendulum motion during translation.
     """)
 use_trajectory = st.sidebar.checkbox("Enable Smooth Trajectory", value=False)
 if use_trajectory:
@@ -249,13 +326,35 @@ estimator_type = st.sidebar.selectbox(
     "Estimator", ["None", "Luenberger (Deterministic)", "Kalman Filter (Stochastic)"])
 with st.sidebar.expander("ℹ️ Theory: Observers"):
     st.markdown(r"""
-    Both reconstruct $\hat x \in\mathbb{R}^4$ from $y=[x,\theta]$ only.
+    The plant has four states $x = [x,\,\dot x,\,\theta,\,\dot\theta]^\top$,
+    but only two are measured: cart position and pole angle.
+    Cart and pole **velocities are not directly sensed** — they must be
+    estimated from position measurements. Both observers reconstruct the
+    full state $\hat x \in \mathbb{R}^4$ from $y = [x,\,\theta]^\top$.
 
-    **Luenberger:** $\dot{\hat x}=A\hat x+Bu+L(y-C\hat x)$, deterministic.
-    High gains → noise amplification.
+    **Luenberger Observer** (deterministic):
+    $$\dot{\hat x} = A\hat x + Bu + L\,(y - C\hat x)$$
+    The gain $L$ is computed by placing observer poles $2$–$5\times$ faster
+    than the controller poles (dual pole placement). Fast observers converge
+    quickly but amplify sensor noise proportionally to $\|L\|$.
 
-    **Kalman (discrete ZOH):** DARE-optimal gain. Balances process noise $Q_v$
-    vs sensor noise $R_w$. Mathematically consistent discrete formulation.
+    **Kalman Filter** (stochastic, discrete ZOH):
+    The gain $L$ is computed by solving the Discrete Algebraic Riccati
+    Equation (DARE) — finding the optimal balance between two noise sources:
+
+    - $Q_v$ (Process Noise): how much you distrust the linear model
+    - $R_w$ (Sensor Noise): how much you distrust the measurements
+
+    The Kalman Filter is the minimum-variance unbiased estimator under
+    Gaussian noise assumptions. Unlike the Luenberger observer, it
+    automatically weights the innovation signal based on noise statistics,
+    making it far more robust to measurement noise.
+
+    | | Luenberger | Kalman |
+    |---|---|---|
+    | Noise handling | None | Optimal |
+    | Tuning | Speed multiplier | $Q_v / R_w$ ratio |
+    | Formulation | Continuous + Euler | Discrete ZOH + DARE |
     """)
 if estimator_type == "Luenberger (Deterministic)":
     obs_speed = st.sidebar.slider("Observer Speed ×", 1.0, 10.0, 4.0, 0.5)
@@ -268,10 +367,34 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🌍 Real-World Constraints")
 with st.sidebar.expander("ℹ️ Theory: Physical Limitations"):
     st.markdown(r"""
-    **Saturation:** motor voltage ceiling → clip $u$.
-    **Friction:** set inside MuJoCo joints (correct physics layer — not input distortion).
-    **Noise:** encoder noise injected into $y$ before estimation.
-    **Disturbances:** impulse or continuous wind bypasses saturation.
+    Pure mathematical controllers assume ideal actuators and perfect sensors.
+    These toggles inject the imperfections present in any real physical system.
+
+    **Actuator Saturation:** DC motors have a finite voltage rail. When the
+    controller demands more force than the motor can deliver, the command is
+    clipped: $u_{actual} = \text{clip}(u,\,-F_{max},\,+F_{max})$.
+    Saturation breaks the linear assumption and can cause **integrator windup**
+    in controllers with integral action (LQI).
+
+    **Rail Friction:** modelled as a two-component force opposing cart motion,
+    applied inside the RK4 integrator at the physics level:
+    $$F_{fric} = b_v\,\dot x + F_c\,\text{sign}(\dot x)$$
+    - $b_v$ (viscous): proportional to velocity — models lubricated bearings
+    - $F_c$ (Coulomb): constant magnitude — models static/kinetic rail contact
+
+    Typical lab values: $b_v \in [0.1,\,0.5]$ N·s/m, $F_c \in [0.1,\,1.0]$ N.
+
+    **Sensor Noise:** optical encoders produce quantisation and electrical
+    noise. Gaussian noise with standard deviation $\sigma$ is injected into
+    the angle measurement $\theta$ before the observer. This motivates the
+    use of a Kalman Filter over a Luenberger observer — the Kalman gain
+    explicitly accounts for the noise covariance.
+
+    **External Disturbances:** impulsive or continuous force applied to the
+    cart after the saturation block, simulating an uncontrolled environmental
+    input (e.g. wind gust). Because it bypasses the motor limit, it represents
+    a force the controller cannot directly counteract through actuation alone —
+    only through feedback and integral action.
     """)
 
 use_saturation = st.sidebar.checkbox("Actuator Saturation")
@@ -302,9 +425,11 @@ else:
 dt               = 0.02
 steps            = int(total_time / dt)
 TARGET_TOLERANCE = 0.05
-LINEARISATION_LIMIT_DEG = 15.0   # sin θ ≈ θ valid below this angle
+# Linearisation validity threshold: sin(20°)/20°(rad) error ≈ 1.9% — standard literature value.
+# Below this angle, sin θ ≈ θ and cos θ ≈ 1 are accurate enough for linear controller synthesis.
+LINEARISATION_LIMIT_DEG = 20.0
 
-A, B, C_sys = env.A, env.B, env.C
+A, B = env.A, env.B
 
 # --- Controllability & Observability ---
 C_obs_mat = np.array([[1, 0, 0, 0], [0, 0, 1, 0]])   # measurement matrix
@@ -412,7 +537,7 @@ for step_idx in range(steps):
     if use_fl:
         th, om = feedback_state[2], feedback_state[3]
         u += -m_p * l * om**2 * np.sin(th)
-        u -= m_p * 9.81 * (th - np.sin(th) * np.cos(th))
+        u -= m_p * env.g * (th - np.sin(th) * np.cos(th))
 
     # 5. Saturation
     if use_saturation:
@@ -440,11 +565,19 @@ for step_idx in range(steps):
 final_p         = history[-1][0]
 final_theta_deg = np.degrees(history[-1][2])
 pos_stable      = abs(final_p - target_p) <= TARGET_TOLERANCE and not terminated
-angle_stable    = abs(final_theta_deg) <= 0.5
+# 1.0° threshold: below typical encoder resolution (0.1–0.5°) and
+# visually indistinguishable from upright. 0.5° was too tight —
+# numerically stable systems were incorrectly flagged as fallen.
+ANGLE_STABLE_DEG = 1.0
+angle_stable    = abs(final_theta_deg) <= ANGLE_STABLE_DEG
 rms_tracking    = np.sqrt(tracking_error_sq / max(len(history) * dt, 1e-9))
 peak_force      = max(abs(u) for u in u_history) if u_history else 0.0
 sat_pct         = 100.0 * sat_steps / max(len(u_history), 1)
 steady_state_err = abs(final_p - target_p)
+# Max angle reached during the entire simulation — used for linearisation validity.
+# Checking only the initial angle is a logic bug: the pendulum may swing well past
+# the linearisation limit mid-simulation even if it starts small.
+max_theta_deg   = max(abs(np.degrees(s[2])) for s in history)
 
 time_arr  = np.arange(len(history)) * dt
 p_arr     = [s[0] for s in history]
@@ -501,10 +634,6 @@ def get_shapes(cart_p: float) -> list:
         dict(type="line", x0=-track_limit-.2, y0=track_y,
              x1=track_limit+.2, y1=track_y,
              line=dict(color="#64748b", width=2), layer="below"),
-        # Linearisation boundary lines on track
-        dict(type="line", x0=-track_limit-.2,
-             y0=track_y-.12, x1=track_limit+.2, y1=track_y-.12,
-             line=dict(color="rgba(245,158,11,0.0)", width=0), layer="below"),
         # Tolerance band
         dict(type="rect",
              x0=target_p-TARGET_TOLERANCE, y0=track_y-.08,
@@ -765,6 +894,20 @@ st.markdown("<hr style='border-color:#1e293b;margin:10px 0;'>",
 st.markdown("<div class='section-title'>📋 Performance Summary</div>",
             unsafe_allow_html=True)
 
+# Colour legend
+st.markdown("""
+<div style='display:flex;gap:20px;align-items:center;margin-bottom:10px;
+            padding:8px 14px;background:#0f172a;border:1px solid #1e293b;
+            border-radius:6px;flex-wrap:wrap;'>
+  <span style='color:#94a3b8;font-size:0.82rem;font-weight:600;'>Status legend:</span>
+  <span style='font-size:0.82rem;color:#f8fafc;'>🟢 <span style='color:#94a3b8;'>Within specification</span></span>
+  <span style='font-size:0.82rem;color:#f8fafc;'>🟡 <span style='color:#94a3b8;'>Marginal — review recommended</span></span>
+  <span style='font-size:0.82rem;color:#f8fafc;'>🔴 <span style='color:#94a3b8;'>Outside specification</span></span>
+  <span style='font-size:0.82rem;color:#f8fafc;'>⚪ <span style='color:#94a3b8;'>Feature inactive</span></span>
+  <span style='font-size:0.82rem;color:#f8fafc;'>— <span style='color:#94a3b8;'>Informational only</span></span>
+</div>
+""", unsafe_allow_html=True)
+
 summary_data = {
     "Metric": [
         "Controller", "Estimator", "Final Position", "Position Error",
@@ -786,9 +929,9 @@ summary_data = {
         f"{sat_pct:.1f}%" if use_saturation else "N/A (no sat.)",
         f"✅ rank={ctrl_rank}" if is_ctrl else f"❌ rank={ctrl_rank}",
         f"✅ rank={obsv_rank}" if is_obsv else f"❌ rank={obsv_rank}",
-        f"✅ θ₀={abs(init_theta_deg):.1f}° < {LINEARISATION_LIMIT_DEG}°"
-            if abs(init_theta_deg) <= LINEARISATION_LIMIT_DEG
-            else f"⚠️ θ₀={abs(init_theta_deg):.1f}° exceeds limit",
+        f"✅ max|θ|={max_theta_deg:.1f}° < {LINEARISATION_LIMIT_DEG}°"
+            if max_theta_deg <= LINEARISATION_LIMIT_DEG
+            else f"⚠️ max|θ|={max_theta_deg:.1f}° exceeded limit",
         "ON" if use_fl else "OFF",
         "ON" if use_trajectory else "OFF",
     ],
@@ -804,7 +947,7 @@ summary_data = {
         "🟢" if sat_pct < 5 else ("🟡" if sat_pct < 20 else "🔴"),
         "🟢" if is_ctrl else "🔴",
         "🟢" if is_obsv else "🔴",
-        "🟢" if abs(init_theta_deg) <= LINEARISATION_LIMIT_DEG else "🟡",
+        "🟢" if max_theta_deg <= LINEARISATION_LIMIT_DEG else "🟡",
         "🟢" if use_fl else "⚪",
         "🟢" if use_trajectory else "⚪",
     ]

@@ -71,10 +71,29 @@ class StateSpaceController:
                  p3: float = -10.0, p4: float = -12.0):
         self.A = A
         self.B = B
-        real_part = -zeta * wn
-        imag_part =  wn * np.sqrt(max(1.0 - zeta**2, 0.0))
-        p1 = complex(real_part,  imag_part)
-        p2 = complex(real_part, -imag_part)
+        sigma = zeta * wn   # real part magnitude (always positive)
+
+        if zeta < 1.0:
+            # Underdamped: complex conjugate pair
+            #   p_{1,2} = -σ ± j·ωd   where ωd = ωn·√(1-ζ²)
+            omega_d = wn * np.sqrt(1.0 - zeta**2)
+            p1 = complex(-sigma,  omega_d)
+            p2 = complex(-sigma, -omega_d)
+
+        elif zeta == 1.0:
+            # Critically damped: repeated real pole at -σ.
+            # ct.place (Ackermann) cannot handle repeated poles — split
+            # by a minimal ε so the design intent is preserved.
+            eps = max(0.01 * sigma, 0.01)
+            p1 = complex(-sigma - eps, 0.0)
+            p2 = complex(-sigma + eps, 0.0)
+
+        else:
+            # Overdamped (ζ > 1): two distinct real poles
+            #   p_{1,2} = -σ ± ωn·√(ζ²-1)
+            delta = wn * np.sqrt(zeta**2 - 1.0)
+            p1 = complex(-sigma - delta, 0.0)
+            p2 = complex(-sigma + delta, 0.0)
         self.desired_poles = [p1, p2, p3, p4]
         self.poles         = self.desired_poles
         self.K  = ct.place(self.A, self.B, self.desired_poles)
@@ -224,8 +243,14 @@ class KalmanFilter:
         self.Ad    = sys_d[0]
         self.Bd    = sys_d[1]
         self.Cd    = sys_d[2]
-        P          = solve_discrete_are(self.Ad, self.Cd.T, Q_v, R_w)
-        S          = self.Cd @ P @ self.Cd.T + R_w
+
+        # Numerical guard: R_w too small → (Cd·P·Cdᵀ + R_w)⁻¹ → ∞ → DARE diverges.
+        # Clamp diagonal to minimum 1e-3 so the matrix inversion stays finite.
+        # Physically this means "at most 1000× trust in sensors" — still very aggressive.
+        R_w_safe   = np.maximum(R_w, np.eye(R_w.shape[0]) * 1e-3)
+
+        P          = solve_discrete_are(self.Ad, self.Cd.T, Q_v, R_w_safe)
+        S          = self.Cd @ P @ self.Cd.T + R_w_safe
         self.L     = P @ self.Cd.T @ np.linalg.inv(S)
         self.x_hat = np.zeros(A.shape[0])
 
