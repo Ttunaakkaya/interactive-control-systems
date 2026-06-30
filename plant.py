@@ -1,84 +1,96 @@
 import numpy as np
+import casadi as ca
 
 
+# ============================================================================ #
+#  Symbolic model — the SINGLE source of truth                                  #
+# ============================================================================ #
+def build_symbolic_cartpole(m_c, m_p, l, g, dt=0.02):
+    """
+    Encode the cart-pole physics ONCE, symbolically (CasADi). Everything the
+    controllers need is then derived from this one expression:
+
+        f : xdot = f(x, u)        continuous nominal dynamics  (this is f̄)
+        A : ∂f/∂x  ,  B : ∂f/∂u   exact analytic Jacobians (no hand derivation)
+        F : x_next = F(x, u)      discrete RK4 one-step map  (feeds MPC / iLQR / GP-MPC)
+
+    Why this matters
+    ----------------
+    1. The linear model A, B used for LQR / pole-placement / LQI is now the
+       EXACT Jacobian of the nonlinear simulator, so the two can never disagree.
+       (The previous hand-typed A, B used (m_c + m_p) where the point-mass model
+        requires m_c in the denominator — a ~10% mismatch, fixed by construction.)
+    2. f and F are symbolic and differentiable, which is exactly what the
+       optimisation-based controllers in the later phases (MPC, iLQR, GP-MPC)
+       require — a NumPy function returning numbers cannot be handed to an NLP.
+
+    This mirrors the design of the Schoellig lab's `safe-control-gym`, which
+    represents its a-priori dynamics symbolically (CasADi) for these same reasons.
+
+    State:  x = [cart_pos, cart_vel, pole_angle, pole_angvel]   (pole_angle = 0 -> upright)
+    Input:  u = horizontal force on the cart (N)
+    """
+    x = ca.SX.sym("x", 4)
+    u = ca.SX.sym("u", 1)
+    vel, theta, theta_dot, force = x[1], x[2], x[3], u[0]
+    sin_th, cos_th = ca.sin(theta), ca.cos(theta)
+
+    # Point-mass cart-pole, full nonlinear (no small-angle approximation).
+    den = m_c + m_p * sin_th**2                                   # always > 0
+    x_ddot = (force + m_p*l*theta_dot**2*sin_th
+              - m_p*g*sin_th*cos_th) / den
+    theta_ddot = ((m_c + m_p)*g*sin_th
+                  - cos_th*(force + m_p*l*theta_dot**2*sin_th)) / (l*den)
+    xdot = ca.vertcat(vel, x_ddot, theta_dot, theta_ddot)
+
+    f = ca.Function("f", [x, u], [xdot], ["x", "u"], ["xdot"])
+    A = ca.Function("A", [x, u], [ca.jacobian(xdot, x)], ["x", "u"], ["A"])
+    B = ca.Function("B", [x, u], [ca.jacobian(xdot, u)], ["x", "u"], ["B"])
+
+    k1 = f(x, u); k2 = f(x + dt/2*k1, u)
+    k3 = f(x + dt/2*k2, u); k4 = f(x + dt*k3, u)
+    F = ca.Function("F", [x, u], [x + dt/6*(k1 + 2*k2 + 2*k3 + k4)],
+                    ["x", "u"], ["x_next"])
+    return {"f": f, "A": A, "B": B, "F": F}
+
+
+# ============================================================================ #
+#  Cart-Pole plant                                                              #
+# ============================================================================ #
 class CartPolePlant:
     def __init__(self, m_c=1.0, m_p=0.1, l=0.5, g=9.81, d=0.0):
         """
-        Cart-Pole plant with full nonlinear dynamics (pure Python, no external physics engine).
+        Cart-Pole plant with full nonlinear dynamics.
 
-        Physics engine features:
-            - Full nonlinear equations of motion (no small-angle approximation)
-            - 4th-order Runge-Kutta (RK4) integration at 2 ms sub-steps
-            - Coulomb + viscous friction on the cart rail (constraint-correct)
-            - Linearised state-space model (A, B) for controller synthesis
-
-        State vector:  x = [cart_pos (m), cart_vel (m/s),
-                             pole_angle (rad), pole_angvel (rad/s)]
-        Input:         u = horizontal force on cart (N)
-
-        Equations of motion (Lagrangian derivation):
-        -----------------------------------------------
-        Let:  M = m_c + m_p,  m = m_p,  L = l (length to tip)
-              θ  = pole angle from vertical (0 = upright)
-              x  = cart position
-
-        Lagrangian:
-            T = ½·M·ẋ² + m·L·ẋ·θ̇·cosθ + ½·m·L²·θ̇²
-            V = −m·g·L·cosθ
-
-        Euler-Lagrange equations yield two coupled 2nd-order ODEs.
-        Solving the 2×2 system in (ẍ, θ̈):
-
-        Denominator (inertia coupling — always positive for any θ):
-            den = m_c + m_p·sin²θ
-            Note: equivalent form M − m·cos²θ also appears in literature;
-                  both are identical via cos²θ = 1 − sin²θ.
-
-        Full coupled solution:
-            ẍ  = [u − F_fric + m·L·θ̇²·sinθ − m·g·sinθ·cosθ] / den
-            θ̈  = [(M)·g·sinθ − cosθ·(u − F_fric + m·L·θ̇²·sinθ)] / (L·den)
-
-        Integration: 4th-order Runge-Kutta at 2 ms sub-steps (500 Hz).
-        No small-angle approximation — valid for any θ ∈ (−π, π).
+        The nonlinear SIMULATOR (step / _derivatives) stays in fast NumPy.
+        The linear model (A, B), the continuous dynamics (f), and the discrete
+        RK4 map (F) all come from ONE symbolic model so nothing can drift apart.
 
         Parameters
         ----------
         m_c : cart mass (kg)
         m_p : pendulum point-mass at tip (kg)
-        l   : pendulum length from pivot to tip (m)
-        g   : gravitational acceleration (m/s²)
-        d   : viscous damping coefficient for the linearised A matrix ONLY.
-              Default 0.0 → linear model matches the frictionless plant.
-              Use set_friction() to add physical friction to the nonlinear sim.
+        l   : pendulum length, pivot -> tip (m)
+        g   : gravity (m/s^2)
+        d   : accepted for backward compatibility. A, B are now the exact
+              Jacobian of the (frictionless) nonlinear model, so d no longer
+              modifies the linear model. Physical friction is added to the
+              nonlinear sim via set_friction().
         """
-        self.m_c = m_c
-        self.m_p = m_p
-        self.l   = l
-        self.g   = g
-        self.d   = d
+        self.m_c, self.m_p, self.l, self.g, self.d = m_c, m_p, l, g, d
+        self._viscous = 0.0      # b_v  (N·s/m)
+        self._coulomb = 0.0      # F_c  (N)
+        self._dt_internal = 0.002  # 500 Hz physics sub-step
 
-        # Friction parameters (set via set_friction())
-        self._viscous  = 0.0   # b_v  (N·s/m)  — velocity-proportional drag
-        self._coulomb  = 0.0   # F_c  (N)       — constant opposing friction
+        # ---- ONE symbolic model feeds A, B, f, F --------------------------
+        self._sym = build_symbolic_cartpole(m_c, m_p, l, g)
+        self.f = self._sym["f"]   # continuous nominal dynamics  (iLQR / MPC linearization)
+        self.F = self._sym["F"]   # discrete RK4 prediction map  (MPC / GP-MPC)
 
-        # Internal sub-step size — 500 Hz physics rate
-        self._dt_internal = 0.002   # 2 ms → 500 Hz physics rate
-
-        # ------------------------------------------------------------------ #
-        # Linearised model — Taylor expansion around θ=0, ẋ=0               #
-        # Valid for |θ| < ~15° (sin θ ≈ θ, cos θ ≈ 1)                       #
-        # Used by all controllers for gain synthesis.                         #
-        # ------------------------------------------------------------------ #
-        Mt = m_c + m_p
-
-        self.A = np.array([
-            [0.0,          1.0,                    0.0,  0.0],
-            [0.0, -d / Mt,     -(m_p * g) / Mt,   0.0],
-            [0.0,          0.0,                    0.0,  1.0],
-            [0.0,  d / (Mt*l),  (Mt * g) / (Mt*l), 0.0]
-        ])
-        self.B = np.array([[0.0], [1.0/Mt], [0.0], [-1.0/(Mt*l)]])
-        self.C = np.array([[1.0, 0.0, 0.0, 0.0],
+        x_eq, u_eq = ca.DM([0, 0, 0, 0]), ca.DM([0])
+        self.A = np.array(self._sym["A"](x_eq, u_eq))   # exact Jacobian at upright
+        self.B = np.array(self._sym["B"](x_eq, u_eq))
+        self.C = np.array([[1.0, 0.0, 0.0, 0.0],        # measure cart_pos, pole_angle
                            [0.0, 0.0, 1.0, 0.0]])
 
     # ---------------------------------------------------------------------- #
@@ -88,132 +100,70 @@ class CartPolePlant:
                      pole_frictionloss: float = 0.0,
                      cart_damping: float = 0.0):
         """
-        Set rail friction parameters for the nonlinear physics engine.
-
-        Two-component friction model:
-            F_friction = −b_v·ẋ  −  F_c·sign(ẋ)
-
-            b_v  (cart_damping)     : viscous damping  (N·s/m)
-                                      Proportional to velocity — models
-                                      lubricated bearings, back-EMF drag.
-            F_c  (cart_frictionloss): Coulomb friction  (N)
-                                      Constant magnitude opposing motion —
-                                      models static/kinetic rail contact.
-
-        pole_frictionloss is accepted for API compatibility but not applied
-        (frictionless pivot is the standard assumption for this system).
-
-        These forces enter the equations of motion directly at the physics
-        level — applied inside the RK4 integrator at every 2 ms sub-step,
-        not subtracted from the control input u.
+        Two-component rail friction for the nonlinear simulator:
+            F_friction = -b_v·ẋ - F_c·sign(ẋ)
+        b_v = cart_damping (viscous), F_c = cart_frictionloss (Coulomb).
+        Note: friction is the part of the dynamics the nominal model f does NOT
+        know about — i.e. exactly the residual δf a GP will learn in Phase 3/4.
         """
         self._viscous = cart_damping
         self._coulomb = cart_frictionloss
-        # pole_frictionloss accepted but not used (frictionless hinge)
 
     # ---------------------------------------------------------------------- #
-    #  Core physics: nonlinear equations of motion                            #
+    #  Fast NumPy simulator (same equations as the symbolic f; guarded below)  #
     # ---------------------------------------------------------------------- #
     def _derivatives(self, state: np.ndarray, u: float) -> np.ndarray:
-        """
-        Compute ẋ = f(x, u) — the full nonlinear cart-pole dynamics.
-
-        No small-angle approximation. Valid for any angle θ ∈ (−π, π).
-
-        Derivation (Lagrangian mechanics):
-            T = ½(m_c+m_p)ẋ² + m_p·L·ẋ·θ̇·cosθ + ½·m_p·L²·θ̇²
-            V = −m_p·g·L·cosθ
-
-            Lagrange equations → coupled 2nd-order ODEs:
-            (m_c+m_p)ẍ + m_p·L·θ̈·cosθ − m_p·L·θ̇²·sinθ = u − F_fric
-            m_p·L²·θ̈ + m_p·L·ẍ·cosθ = m_p·g·L·sinθ
-
-            Solve the 2×2 linear system in (ẍ, θ̈):
-
-            den = m_c + m_p·sin²θ   (always > 0)
-
-            ẍ  = [u − F_fric + m_p·L·θ̇²·sinθ − m_p·g·sinθ·cosθ] / den
-            θ̈  = [g·sinθ·(m_c+m_p) − cosθ·(u − F_fric + m_p·L·θ̇²·sinθ)] /
-                  (L·den)
-        """
         _, x_dot, theta, theta_dot = state
-
         m_c, m_p, L, g = self.m_c, self.m_p, self.l, self.g
+        sin_th, cos_th = np.sin(theta), np.cos(theta)
 
-        sin_th = np.sin(theta)
-        cos_th = np.cos(theta)
+        DEADBAND = 1e-4
+        f_visc = self._viscous * x_dot
+        f_coul = self._coulomb * np.sign(x_dot) if abs(x_dot) > DEADBAND else 0.0
+        F_fric = f_visc + f_coul
 
-        # Friction force on cart (opposes velocity; deadband avoids chattering)
-        DEADBAND = 1e-4   # m/s — below this speed, Coulomb friction = 0
-        f_viscous = self._viscous * x_dot
-        f_coulomb = self._coulomb * np.sign(x_dot) if abs(x_dot) > DEADBAND else 0.0
-        F_fric    = f_viscous + f_coulomb
-
-        # Inertia coupling denominator (always positive)
         den = m_c + m_p * sin_th**2
-
-        # Cart acceleration
-        x_ddot = (u - F_fric
-                  + m_p * L * theta_dot**2 * sin_th
-                  - m_p * g * sin_th * cos_th) / den
-
-        # Pole angular acceleration
-        theta_ddot = ((m_c + m_p) * g * sin_th
-                      - cos_th * (u - F_fric + m_p * L * theta_dot**2 * sin_th)
-                      ) / (L * den)
-
+        x_ddot = (u - F_fric + m_p*L*theta_dot**2*sin_th
+                  - m_p*g*sin_th*cos_th) / den
+        theta_ddot = ((m_c + m_p)*g*sin_th
+                      - cos_th*(u - F_fric + m_p*L*theta_dot**2*sin_th)) / (L*den)
         return np.array([x_dot, x_ddot, theta_dot, theta_ddot])
 
-    # ---------------------------------------------------------------------- #
-    #  RK4 integrator                                                          #
-    # ---------------------------------------------------------------------- #
     def _rk4_step(self, state: np.ndarray, u: float, dt: float) -> np.ndarray:
-        """
-        Single RK4 step of size dt.
+        k1 = self._derivatives(state, u)
+        k2 = self._derivatives(state + 0.5*dt*k1, u)
+        k3 = self._derivatives(state + 0.5*dt*k2, u)
+        k4 = self._derivatives(state + dt*k3, u)
+        return state + (dt/6.0)*(k1 + 2*k2 + 2*k3 + k4)
 
-        RK4 formula:
-            k1 = f(x,        u)
-            k2 = f(x+dt/2·k1, u)
-            k3 = f(x+dt/2·k2, u)
-            k4 = f(x+dt·k3,  u)
-            x_next = x + dt/6·(k1 + 2k2 + 2k3 + k4)
-
-        4th-order accurate: local truncation error O(dt⁵),
-        global error O(dt⁴). At dt=2ms this gives sub-micrometre
-        position accuracy.
-        """
-        k1 = self._derivatives(state,               u)
-        k2 = self._derivatives(state + 0.5*dt*k1,   u)
-        k3 = self._derivatives(state + 0.5*dt*k2,   u)
-        k4 = self._derivatives(state +     dt*k3,   u)
-        return state + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
-
-    # ---------------------------------------------------------------------- #
-    #  Public step interface                                                   #
-    # ---------------------------------------------------------------------- #
     def step(self, state: np.ndarray, u: float, dt: float) -> np.ndarray:
-        """
-        Advance the simulation by one control timestep dt.
-
-        Sub-steps at the internal physics rate (2 ms) using RK4, then returns
-        the state at time t+dt.
-
-        Parameters
-        ----------
-        state : np.ndarray  [cart_pos (m), cart_vel (m/s),
-                              pole_angle (rad), pole_angvel (rad/s)]
-        u     : float       applied horizontal force on cart (N)
-        dt    : float       control timestep (s)  — typically 0.02 s
-
-        Returns
-        -------
-        np.ndarray  next state [cart_pos, cart_vel, pole_angle, pole_angvel]
-        """
+        """Advance one control step dt, sub-stepping at the 2 ms physics rate."""
         n_substeps = max(1, int(round(dt / self._dt_internal)))
-        dt_sub     = dt / n_substeps
-
+        dt_sub = dt / n_substeps
         current = state.copy()
         for _ in range(n_substeps):
             current = self._rk4_step(current, u, dt_sub)
-
         return current
+
+    # ---------------------------------------------------------------------- #
+    #  Guardrail: the NumPy simulator must match the symbolic model exactly    #
+    # ---------------------------------------------------------------------- #
+    def assert_consistent(self, n_samples: int = 200, tol: float = 1e-9) -> bool:
+        """
+        Frictionless NumPy _derivatives must equal the symbolic f everywhere.
+        Run this in a test so the two implementations can never silently drift.
+        """
+        rng = np.random.default_rng(0)
+        v, c = self._viscous, self._coulomb
+        self._viscous = self._coulomb = 0.0
+        try:
+            for _ in range(n_samples):
+                x = rng.uniform(-2, 2, 4)
+                u = float(rng.uniform(-10, 10))
+                num = self._derivatives(x, u)
+                sym = np.array(self.f(x, u)).flatten()
+                assert np.max(np.abs(num - sym)) < tol, \
+                    "simulator drifted from symbolic model!"
+        finally:
+            self._viscous, self._coulomb = v, c
+        return True
