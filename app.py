@@ -1,18 +1,41 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import numpy as np
 import plotly.graph_objects as go
 import control as ct
 from plant import CartPolePlant
 from controller import (PIDController, StateSpaceController, LQRController,
                         LuenbergerObserver, KalmanFilter, LQIController,
-                        TrajectoryPlanner)
+                        TrajectoryPlanner, iLQRController, solve_ilqr, MPCController, GPMPCController, MPSCFilter, RecklessPolicy)
+
+from learning import collect_rollouts, ResidualGP
+
+@st.cache_data(show_spinner="Solving iLQR swing-up…")
+def cached_ilqr_solution(m_c, m_p, l, x0, xg, N, q_ang, r_w):
+    env_local = CartPolePlant(m_c, m_p, l)
+    Q  = np.diag([1.0, 0.1, q_ang, 0.1]); R = np.diag([r_w]); Qf = np.diag([50.0, 5.0, 200.0, 5.0])
+    xt, ut, K, J = solve_ilqr(env_local.F, np.array(x0), np.array(xg), N, Q, R, Qf, max_iters=100)
+    return xt, ut, K
+
+@st.cache_resource(show_spinner="Collecting 36s of data & training the residual GP (runs once per configuration)…")
+def train_residual_gp(m_c, m_p, l, prior_scale, coulomb, viscous, n_rollouts=12, seed=0):
+    import warnings as _w
+    from sklearn.exceptions import ConvergenceWarning as _CW
+    _w.filterwarnings("ignore", category=_CW)     # railed lengthscale = benign
+    import scipy.linalg as _sla
+    true_env = CartPolePlant(m_c, m_p, l)
+    true_env.set_friction(cart_frictionloss=coulomb, cart_damping=viscous)
+    nominal  = CartPolePlant(m_c, m_p * prior_scale, l)
+    Q = np.diag([100.0, 1.0, 10.0, 1.0]); R = np.array([[1.0]])
+    P = _sla.solve_continuous_are(nominal.A, nominal.B, Q, R)
+    K = np.linalg.solve(R, nominal.B.T @ P)
+    Z, Rres, _ = collect_rollouts(true_env, nominal, K, n_rollouts=n_rollouts, seed=seed)
+    return ResidualGP(max_points=300).fit(Z, Rres)
 
 # ============================================================================ #
 #  Mermaid renderer                                                             #
 # ============================================================================ #
 def render_mermaid(code: str, height: int = 180):
-    components.html(
+    st.iframe(
         f"""<body style="background-color:#0f172a;margin:0;display:flex;
             justify-content:center;align-items:center;height:100%;overflow:hidden;">
         <div class="mermaid">{code}</div>
@@ -66,8 +89,9 @@ button[kind="header"]{background-color:rgba(56,189,248,0.1)!important;
 </style>
 <div class="main-header">Inverted Pendulum Digital Twin</div>
 <div class="sub-header">
-  Nonlinear RK4 Physics Engine · Full-State Feedback · Optimal Control ·
-  Stochastic Estimation · Feedback Linearisation
+  Nonlinear RK4 Physics · Symbolic Dynamics (CasADi) · Full-State Feedback ·
+  Optimal Control · Trajectory Optimisation · Constrained MPC ·
+  Learning-Based Control (GP-MPC) · Certifiably Safe Control (MPSC)
 </div>
 <hr style="border-color:#1e293b;margin-top:5px;margin-bottom:15px;">
 """, unsafe_allow_html=True)
@@ -77,6 +101,34 @@ button[kind="header"]{background-color:rgba(56,189,248,0.1)!important;
 #  SIDEBAR                                                                      #
 # ============================================================================ #
 st.sidebar.markdown("### 🎛️ Control Panel")
+
+with st.sidebar.expander("📚 Method Ladder — what this app demonstrates"):
+    render_mermaid("""flowchart LR
+        A[PID]-->B[LQR / LQI]
+        B-->C[iLQR]
+        C-->D[MPC]
+        D-->E[GP-MPC]
+        E-->F[+ MPSC 🛡️]""", height=90)
+    st.markdown(r"""
+    One plant, one symbolic model, the **full arc of modern control** —
+    each method fixes the previous one's structural limitation:
+
+    | Method | Course ref. | Adds |
+    |---|---|---|
+    | PID | baseline | error feedback (SISO) |
+    | Pole Place / LQR / LQI | Ch. 2 | full-state, *optimal* feedback |
+    | iLQR | Ch. 4 | nonlinear trajectory optimisation (swing-up) |
+    | MPC | Ch. 5 | constraints *inside* the optimiser |
+    | + Robust mode | Ch. 5.5 | worst-case constraint tightening |
+    | GP-MPC | Ch. 6 | **learns** model error from data |
+    | + Chance mode | Ch. 6.5 | tightening from *learned* uncertainty |
+    | MPSC filter | safe-RL literature | certifies **any** policy |
+
+    Offline companions in this repo: **residual-GP model learning**
+    (`experiment_phase3.py`, Ch. 6.1–6.3) and **dynamic programming /
+    value iteration** (`experiment_value_iteration.py`, Ch. 1.2 ≡ Ch. 7.3.1),
+    where DP numerically rediscovers the LQR solution.
+    """)
 st.sidebar.markdown("---")
 
 # --- Simulation Duration ---
@@ -108,7 +160,8 @@ st.sidebar.markdown("---")
 controller_type = st.sidebar.selectbox(
     "🧠 Brain Architecture",
     ["PID (Classical)", "Pole Placement (State-Space)",
-     "LQR (Optimal Control)", "LQI (Integral Optimal Control)"])
+     "LQR (Optimal Control)", "LQI (Integral Optimal Control)",
+     "iLQR (Swing-Up)", "MPC (Constrained Optimal)", "GP-MPC (Learning-Based)", "Reckless (Safety Demo)"])
 
 with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
     if controller_type == "PID (Classical)":
@@ -164,6 +217,135 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
         ⚠️ If the observer has not yet converged, the integral accumulates
         error based on a wrong state estimate — leading to windup instability.
         Always verify observer convergence before increasing $Q_{int}$.
+        """)
+    elif controller_type == "iLQR (Swing-Up)":
+        render_mermaid("""flowchart LR
+            X0((x₀ hanging))-->FP[Forward rollout]
+            FP-->BP[Backward pass<br/>Q-expansion → k, K]
+            BP-->LS[Line search α]
+            LS-->|improved|FP
+            LS-->|converged|OUT[(x*, u*, K_t)]
+            OUT-->EX[Playback + terminal LQR hold]""", height=160)
+        st.markdown(r"""
+        **Iterative LQR — nonlinear trajectory optimisation** *(Book Ch. 4)*.
+
+        LQR is a *local* law: valid only near the upright equilibrium.
+        Swing-up from hanging ($\theta_0 = \pi$) is a **global nonlinear
+        manoeuvre** that no fixed linear gain can perform. iLQR solves it by
+        repeatedly approximating the problem as an LQR around the current
+        trajectory:
+
+        1. **Backward pass** — expand the Q-function to 2nd order along
+           $(\bar x, \bar u)$ and recover a feedforward + feedback pair:
+           $$k = -Q_{uu}^{-1}Q_u, \qquad K = -Q_{uu}^{-1}Q_{ux}$$
+        2. **Forward pass** — roll the nonlinear dynamics out with
+           $u = \bar u + \alpha k + K(x - \bar x)$, backtracking on $\alpha$.
+        3. Levenberg–Marquardt regularisation on $Q_{uu}$ keeps the step
+           well-posed where the quadratic model is non-convex.
+
+        **Key property** *(Book §4.3)*: near the equilibrium the iLQR gains
+        collapse to the LQR gains — LQR is iLQR's fixed point.
+
+        **In this app:** the trajectory is solved **once and cached**; the
+        controller plays back $u^*_t + K_t(x - x^*_t)$, then hands over to a
+        terminal LQR that holds the pole upright.
+
+        **Limitation:** the plan is computed for one initial state. Persistent
+        disturbances or model error are absorbed only by the time-varying
+        feedback $K_t$ — re-planning every step fixes this, which is **MPC**.
+        """)
+    elif controller_type == "MPC (Constrained Optimal)":
+        render_mermaid("""flowchart LR
+            Xk[x_k]-->OCP[Solve N-step OCP<br/>constraints INSIDE]
+            OCP-->|apply u₀ only|P[Plant]
+            P-->|x_k+1 · re-plan|Xk""", height=130)
+        st.markdown(r"""
+        **Model Predictive Control — receding-horizon optimisation**
+        *(Book Ch. 5)*. Every 20 ms, solve
+
+        $$\min_{u_{0:N-1}} \sum_{k=0}^{N-1}\bigl(x_k^\top Q x_k + u_k^\top R u_k\bigr) + x_N^\top P\,x_N$$
+
+        $$\text{s.t. } x_{k+1} = F(x_k,u_k),\quad |u_k|\le F_{max},\quad |x_{pos,k}|\le L_{track}$$
+
+        then apply **only $u_0$** and re-solve from the newest state.
+
+        **Why it beats LQR + clipping:** saturation and the rail end are
+        **inside the optimisation** — the controller *plans with* its limits
+        instead of discovering them after the fact. Demos: under a strong
+        gust, LQR+clip destabilises while MPC recovers; under sustained wind
+        near the wall, LQR parks past the limit while MPC leans against it.
+
+        **Stability ingredient** *(§5.3)*: the terminal cost $P$ comes from
+        the DARE at upright — a proxy for the infinite tail. State constraints
+        are **soft** (heavily penalised slack) so the solver stays feasible
+        when a disturbance shoves the state outside the box.
+
+        **Engineering:** the NLP (CasADi/IPOPT, multiple shooting) is built
+        once and re-solved warm-started (~30–45 ms/step) — a real solve per
+        control step, so simulations compute slower than wall-clock.
+
+        **Limitation:** predictions are only as good as the model $F$ —
+        unmodelled friction or wrong mass degrade it. That is **GP-MPC**'s cue.
+        """)
+    elif controller_type == "GP-MPC (Learning-Based)":
+        render_mermaid("""flowchart LR
+            D[(rollout data)]-->GP[GP residual δf<br/>mean μ · std σ]
+            FB[nominal f̄<br/>wrong mass, no friction]-->SUM((+))
+            GP-->SUM
+            SUM-->MPC[MPC prediction<br/>+ κσ tightening]
+            MPC-->P[Plant]
+            P-.->D""", height=160)
+        st.markdown(r"""
+        **Learning-based MPC** *(Book Ch. 6)* — the controller's prediction
+        model is **prior + learned residual**:
+
+        $$x_{k+1} = \bar f(x_k,u_k) + \delta f(x_k,u_k), \qquad
+          \delta f \sim \mathcal{GP}(\mu, \sigma^2)$$
+
+        The prior $\bar f$ is *deliberately wrong* (pole-mass error slider,
+        no friction model). Two GPs learn the velocity-state residuals from
+        ~36 s of closed-loop data — friction, mass error and all — and the
+        MPC plans with the corrected model. *(Sequential architecture: $\mu,
+        \sigma$ are evaluated along the warm-start plan and enter the NLP as
+        parameters, keeping solves at ~45 ms.)*
+
+        **Constraint handling** — the same tightening channel, three sources:
+
+        | Mode | Margin | Book |
+        |---|---|---|
+        | Nominal | none | — |
+        | Chance | $\kappa\,\sigma_{pos,k}$ from **propagated GP uncertainty** | §6.5.1–6.5.2 |
+        | Robust | fixed worst-case bound $\bar w$ | §5.5 |
+
+        $$\Sigma_{k+1} = A_k\Sigma_k A_k^\top + S\,\mathrm{diag}(w_k)\,S^\top,
+          \qquad |x_{pos,k}| \le L - \kappa\sqrt{\Sigma_k[0,0]}$$
+
+        **Two lessons this exposes:** (1) the chance margin **shrinks as data
+        accrues** (3 → 30 rollouts slims the 🔮 tube) — learning reduces the
+        conservatism robust MPC pays forever; (2) GP-$\sigma$ covers
+        *epistemic* uncertainty only — a wind absent from training data is
+        invisible to it; that is what the robust bound is for.
+        """)
+    elif controller_type == "Reckless (Safety Demo)":
+        render_mermaid("""flowchart LR
+            POL[Competent balancer<br/>target = wall + Δ]-->|u|P[Plant]
+            P-->|x|POL
+            P-.->|approaching rail end|X[💥]""", height=120)
+        st.markdown(r"""
+        **A deliberately unsafe policy** — the stand-in for a learned (e.g. RL)
+        policy trained **without constraint knowledge**: it balances the pole
+        with proper LQR gains, but its internal position target lies *beyond
+        the physical rail end*, so it competently drives the system into the
+        wall.
+
+        **Why it exists:** to demonstrate the safe-learning thesis. Making
+        this policy safe by *retraining* would change the policy; wrapping it
+        with the **🛡️ MPSC safety filter** below leaves the policy untouched
+        and certifies its actions at runtime.
+
+        **Run it both ways:** filter OFF → out of bounds within ~1 s;
+        filter ON → held just inside the wall indefinitely, pole upright,
+        with the filter's counter-force visible in the 🛡️ telemetry chart.
         """)
     else:
         render_mermaid("""flowchart LR
@@ -249,6 +431,56 @@ elif controller_type == "LQI (Integral Optimal Control)":
     controller = LQIController(A=env.A, B=env.B,
                                q_pos=q_pos, q_ang=q_ang,
                                q_int=q_int, r_weight=r_weight)
+    
+
+elif controller_type == "iLQR (Swing-Up)":
+    st.sidebar.caption("Set **Starting Angle = ±180°** (hanging) and **Duration ≥ 6 s** for the full swing-up.")
+    horizon  = st.sidebar.slider("Horizon (steps)", 100, 300, 200, 10)
+    q_ang    = st.sidebar.slider("Angle weight Qθ", 0.5, 10.0, 2.0, 0.5)
+    r_weight = st.sidebar.slider("Force weight R",  0.01, 1.0, 0.10, 0.01)
+    _x0 = (init_p, 0.0, np.radians(init_theta_deg), 0.0)
+    _xg = (target_p, 0.0, 0.0, 0.0)
+    _sol = cached_ilqr_solution(m_c, m_p, l, _x0, _xg, horizon, q_ang, r_weight)
+    controller = iLQRController(env, np.array(_xg), *_sol)
+
+elif controller_type == "MPC (Constrained Optimal)":
+    st.sidebar.caption("Constraints live INSIDE the optimizer — add a 💨 Disturbance to watch it defend them.")
+    horizon   = st.sidebar.slider("Horizon (steps)", 20, 80, 40, 5)
+    q_pos     = st.sidebar.slider("Q_pos", 0.1, 500.0, 10.0, 0.1)
+    q_ang     = st.sidebar.slider("Q_ang", 0.1, 500.0, 50.0, 1.0)
+    r_weight  = st.sidebar.slider("R", 0.01, 50.0, 0.10, 0.01)
+    mpc_force = st.sidebar.slider("Force Limit (N)", 1.0, 100.0, 15.0, 1.0)
+    controller = MPCController(env, horizon=horizon, q_pos=q_pos, q_ang=q_ang,
+                               r_weight=r_weight, max_force=mpc_force,
+                               track_limit=0.97 * track_limit)
+    st.sidebar.caption("⏳ Solves an NLP every 20 ms (~30–45 ms/solve): a 10 s run "
+                       "computes for ~15–25 s.")
+    
+elif controller_type == "GP-MPC (Learning-Based)":
+    st.sidebar.caption("Predicts with **f̄ (wrong prior) + GP residual**, and can tighten "
+                       "constraints by its own uncertainty (Book §6.5) or a fixed bound (§5.5).")
+    prior_err      = st.sidebar.slider("Prior pole-mass error (%)", 0, 200, 100, 10)
+    gpmpc_use_gp   = st.sidebar.checkbox("Use learned GP residual", True)
+    gpmpc_rollouts = st.sidebar.slider("Training rollouts", 3, 30, 12, 1)
+    gpmpc_mode     = st.sidebar.radio("Constraint handling",
+                     ["Nominal (no margin)", "Chance (learned σ)", "Robust (fixed w̄)"], index=1)
+    gpmpc_kappa, gpmpc_wbound = 2.0, 0.05          # defaults for inactive modes
+    if "Chance" in gpmpc_mode:
+        gpmpc_kappa  = st.sidebar.slider("Confidence κ (σ-multiplier)", 0.5, 3.0, 2.0, 0.1)
+    elif "Robust" in gpmpc_mode:
+        gpmpc_wbound = st.sidebar.slider("Robust noise bound w̄", 0.01, 0.20, 0.05, 0.01)
+    gpmpc_horizon  = st.sidebar.slider("Horizon (steps)", 30, 80, 40, 5)
+    gpmpc_force    = st.sidebar.slider("Force Limit (N)", 1.0, 100.0, 15.0, 1.0)
+    st.sidebar.caption("⏳ Solves an NLP every 20 ms (~45 ms/solve): a 10 s run "
+                       "computes for ~20–25 s. First run also trains the GP once.")
+    controller = None   # built after the friction sliders (GP must train on the TRUE friction)
+
+elif controller_type == "Reckless (Safety Demo)":
+    st.sidebar.caption("Balances the pole but targets a point **beyond the rail end** — "
+                       "a stand-in for a policy trained without constraint knowledge. "
+                       "Enable the 🛡️ Safety Filter below to certify it.")
+    reckless_over = st.sidebar.slider("Target beyond wall (+m)", 0.1, 1.0, 0.5, 0.1)
+    controller = RecklessPolicy(env, track_limit + reckless_over)
 
 # --- Nonlinear Dynamics ---
 st.sidebar.markdown("---")
@@ -408,6 +640,63 @@ else:
     viscous_friction = coulomb_friction = 0.0
 env.set_friction(cart_frictionloss=coulomb_friction, cart_damping=viscous_friction)
 
+if controller_type == "GP-MPC (Learning-Based)":
+    _prior_scale = 1.0 + prior_err / 100.0
+    _nominal = CartPolePlant(m_c, m_p * _prior_scale, l)
+    _gp = (train_residual_gp(m_c, m_p, l, _prior_scale, coulomb_friction,
+                             viscous_friction, n_rollouts=gpmpc_rollouts)
+           if gpmpc_use_gp else None)
+    _mode = {"Nominal (no margin)": "nominal", "Chance (learned σ)": "chance",
+             "Robust (fixed w̄)": "robust"}[gpmpc_mode]
+    controller = GPMPCController(_nominal, _gp, use_gp=gpmpc_use_gp,
+                                 horizon=gpmpc_horizon, max_force=gpmpc_force,
+                                 track_limit=track_limit,
+                                 constraint_mode=_mode, kappa=gpmpc_kappa,
+                                 w_bound=gpmpc_wbound)
+gpmpc_snapshots = []
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛡️ Safety Filter (MPSC)")
+with st.sidebar.expander("ℹ️ Theory: Model Predictive Safety Certification"):
+    render_mermaid("""flowchart LR
+        POL[Any policy<br/>PID · LQR · RL …]-->|u_prop|F[MPSC filter<br/>min ‖u−u_prop‖²<br/>s.t. safe tail exists]
+        F-->|u_certified|P[Plant]
+        P-->|x|POL
+        P-->|x|F""", height=140)
+    st.markdown(r"""
+    **Certifiably safe control for *any* policy** *(safe-RL literature;
+    cf. `safe-control-gym`'s MPSC)*. Each step, given the active
+    controller's proposal $u_{prop}$, the filter solves
+
+    $$\min_{u_{0:N-1}} \;(u_0 - u_{prop})^2
+      \quad \text{s.t. } x_{k+1}=F(x_k,u_k),\; |u_k|\le F_{max},$$
+    $$|x_{pos,k}|\le L,\;\; |\theta_k|\le 34°,\;\;
+      x_N \in \text{recovery box}$$
+
+    and applies $u_0$. The objective has **no performance opinion** — it
+    only asks: *from this action, does a safe future still exist?*
+
+    **Two defining properties** (both measured in this app):
+    - **Transparency** — wrapping a safe LQR: max deviation
+      $3\times10^{-4}$ N, 0 % interventions. The filter is invisible
+      when the policy is safe.
+    - **Minimal intervention** — against the Reckless policy: near-zero
+      action early, then exactly the counter-force needed at the boundary.
+
+    **Honest simplifications:** the terminal *recovery box* stands in for a
+    certified invariant set (full MPSC uses an RPI/CLF set), and the filter
+    enforces $0.97\,L$ — it is *optimally lazy* (defers braking to the last
+    feasible moment), so a small standoff absorbs model/step mismatch.
+    """)
+use_mpsc = st.sidebar.checkbox("Wrap active controller with safety filter")
+if use_mpsc:
+    mpsc_horizon = st.sidebar.slider("Filter horizon (steps)", 30, 80, 50, 5)
+    mpsc_force   = st.sidebar.slider("Filter force limit (N)", 1.0, 100.0, 15.0, 1.0)
+    mpsc = MPSCFilter(env, horizon=mpsc_horizon, max_force=mpsc_force,
+                      track_limit=0.97 * track_limit)
+    st.sidebar.caption("⏳ Adds an NLP solve every 20 ms (~50 ms/solve).")
+mpsc_log = []
+
 use_noise = st.sidebar.checkbox("Sensor Noise")
 noise_std = st.sidebar.slider("Angle Noise σ (deg)", 0.01, 5.0, 0.5, 0.01) if use_noise else 0.0
 
@@ -533,11 +822,23 @@ for step_idx in range(steps):
         u_fb = controller.compute(p_ref, feedback_state)
     u = u_fb + u_ff
 
+    if controller_type == "GP-MPC (Learning-Based)" and getattr(controller, "last_plan", None) is not None:
+        gpmpc_snapshots.append((step_idx, float(feedback_state[0]),
+                                controller.last_plan.copy(),
+                                controller.last_pos_sigma.copy(),
+                                controller.last_tight.copy()))
+
     # 4.5 Feedback Linearisation
     if use_fl:
         th, om = feedback_state[2], feedback_state[3]
         u += -m_p * l * om**2 * np.sin(th)
         u -= m_p * env.g * (th - np.sin(th) * np.cos(th))
+
+    # 4.7 Safety filter (MPSC): minimally modify u so a safe tail stays feasible
+    if use_mpsc:
+        _u_prop = float(u)
+        u = mpsc.filter(feedback_state, _u_prop)
+        mpsc_log.append((step_idx, _u_prop, float(u)))
 
     # 5. Saturation
     if use_saturation:
@@ -578,6 +879,14 @@ steady_state_err = abs(final_p - target_p)
 # Checking only the initial angle is a logic bug: the pendulum may swing well past
 # the linearisation limit mid-simulation even if it starts small.
 max_theta_deg   = max(abs(np.degrees(s[2])) for s in history)
+
+# --- Safety-filter statistics (when active) ---
+if use_mpsc and mpsc_log:
+    _mpsc_dv     = [abs(a - b) for _, a, b in mpsc_log]
+    mpsc_int_pct = 100.0 * float(np.mean([d > 0.01 for d in _mpsc_dv]))
+    mpsc_max_dv  = float(max(_mpsc_dv))
+else:
+    mpsc_int_pct = mpsc_max_dv = 0.0
 
 time_arr  = np.arange(len(history)) * dt
 p_arr     = [s[0] for s in history]
@@ -733,7 +1042,69 @@ fig_anim.update_layout(
                  args=[["0"], {"frame": {"duration": 0, "redraw": True},
                                "mode": "immediate", "transition": {"duration": 0}}]),
         ])])
-st.plotly_chart(fig_anim, use_container_width=True)
+st.plotly_chart(fig_anim, width='stretch')
+
+# ---- Safety-filter telemetry: proposed vs certified action -----------------
+if use_mpsc and mpsc_log:
+    st.subheader("🛡️ Safety Filter — proposed vs certified action")
+    _t  = [s[0] * dt for s in mpsc_log]
+    _up = [s[1] for s in mpsc_log]
+    _uf = [s[2] for s in mpsc_log]
+    _dv = [abs(a - b) for a, b in zip(_up, _uf)]
+    fig_mpsc = go.Figure()
+    fig_mpsc.add_trace(go.Scatter(x=_t, y=_up, name="proposed u (policy)",
+                                  line=dict(color="#94a3b8", dash="dash")))
+    fig_mpsc.add_trace(go.Scatter(x=_t, y=_uf, name="certified u (filter)",
+                                  line=dict(color="#22c55e", width=2)))
+    fig_mpsc.add_trace(go.Scatter(x=_t, y=_dv, name="intervention |Δu|",
+                                  fill="tozeroy", line=dict(color="#ef4444", width=1)))
+    fig_mpsc.update_layout(height=380, xaxis_title="time (s)", yaxis_title="force (N)",
+                           legend=dict(orientation="h", y=1.12))
+    st.plotly_chart(fig_mpsc, width='stretch')
+    _pct = 100.0 * np.mean([d > 0.01 for d in _dv])
+    st.caption(f"Filter intervened on {_pct:.0f}% of steps; max |Δu| = {max(_dv):.1f} N. "
+               "Near-zero early intervention with boundary-only action = least-restrictive certification.")
+
+# ---- GP-MPC prediction tube (Book §6.5: uncertainty propagated along the plan) ----
+if controller_type == "GP-MPC (Learning-Based)" and gpmpc_snapshots:
+    st.subheader("🔮 GP-MPC Prediction Tube")
+    st.caption("At each moment, the controller's planned position (orange), its propagated "
+               "uncertainty tube ±κσ (band), and the tightened constraint it actually enforces "
+               "(red dashed). Drag the slider through time.")
+    _step = max(1, len(gpmpc_snapshots) // 40)
+    _snaps = gpmpc_snapshots[::_step]
+    _frames = []
+    for j, (si, spos, splan, ssig, stight) in enumerate(_snaps):
+        t_plan = (si + np.arange(splan.shape[1])) * dt
+        t_past = [s[0] * dt for s in gpmpc_snapshots[:si + 1] if s[0] <= si]
+        p_past = [s[1] for s in gpmpc_snapshots[:si + 1] if s[0] <= si]
+        band = gpmpc_kappa * ssig
+        _frames.append(go.Frame(name=str(j), data=[
+            go.Scatter(x=t_past, y=p_past, mode="lines",
+                       line=dict(color="#1f77b4", width=3), name="actual"),
+            go.Scatter(x=list(t_plan) + list(t_plan[::-1]),
+                       y=list(splan[0] + band) + list((splan[0] - band)[::-1]),
+                       fill="toself", fillcolor="rgba(255,165,0,0.25)",
+                       line=dict(width=0), name="±κσ tube"),
+            go.Scatter(x=t_plan, y=splan[0], mode="lines",
+                       line=dict(color="orange", dash="dot", width=2), name="planned mean"),
+            go.Scatter(x=t_plan, y=track_limit - stight, mode="lines",
+                       line=dict(color="red", dash="dash", width=1.5), name="tightened bound"),
+        ]))
+    fig_tube = go.Figure(data=_frames[0].data, frames=_frames)
+    fig_tube.add_hline(y=track_limit, line_color="red", line_width=2,
+                       annotation_text="track limit")
+    fig_tube.add_hline(y=-track_limit, line_color="red", line_width=2)
+    fig_tube.update_layout(
+        height=420, xaxis_title="time (s)", yaxis_title="cart position (m)",
+        sliders=[dict(steps=[dict(method="animate", label=f"{s[0]*dt:.1f}s",
+                                  args=[[str(j)], dict(mode="immediate",
+                                        frame=dict(duration=0, redraw=True),
+                                        transition=dict(duration=0))])
+                             for j, s in enumerate(_snaps)],
+                      currentvalue=dict(prefix="t = "))],
+        showlegend=True, legend=dict(orientation="h", y=1.12))
+    st.plotly_chart(fig_tube, width='stretch')
 
 # ============================================================================ #
 #  ── SECTION D: Diagnostic Telemetry ───────────────────────────────────────  #
@@ -766,7 +1137,7 @@ if use_estimator:
         xaxis=dict(showgrid=True, gridcolor="#1e293b"),
         legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#f8fafc")),
         margin=dict(l=0, r=60, t=35, b=0))
-    st.plotly_chart(fig_conv, use_container_width=True)
+    st.plotly_chart(fig_conv, width='stretch')
 
 # --- Row 1: Position | Angle ---
 r1c1, r1c2 = st.columns(2)
@@ -814,8 +1185,8 @@ fig_angle.update_layout(height=300, title="Pendulum Angle (shaded = nonlinear re
     xaxis_title="Time (s)", yaxis_title="Angle (°)",
     **PLOT_THEME, margin=dict(l=0, r=0, t=30, b=0))
 
-with r1c1: st.plotly_chart(fig_pos,   use_container_width=True)
-with r1c2: st.plotly_chart(fig_angle, use_container_width=True)
+with r1c1: st.plotly_chart(fig_pos,   width='stretch')
+with r1c2: st.plotly_chart(fig_angle, width='stretch')
 
 # --- Row 2: Control Force | Phase Portrait ---
 r2c1, r2c2 = st.columns(2)
@@ -858,8 +1229,8 @@ fig_phase.update_layout(height=300,
     **{k: v for k, v in PLOT_THEME.items() if k not in ('xaxis','yaxis')},
     margin=dict(l=0, r=0, t=30, b=0))
 
-with r2c1: st.plotly_chart(fig_u,     use_container_width=True)
-with r2c2: st.plotly_chart(fig_phase, use_container_width=True)
+with r2c1: st.plotly_chart(fig_u,     width='stretch')
+with r2c2: st.plotly_chart(fig_phase, width='stretch')
 
 # --- Row 3: Velocity states ---
 r3c1, r3c2 = st.columns(2)
@@ -883,8 +1254,8 @@ fig_pv.update_layout(height=240, title="Pole Angular Velocity θ̇ (°/s)",
     xaxis_title="Time (s)", yaxis_title="°/s",
     **PLOT_THEME, margin=dict(l=0, r=0, t=30, b=0))
 
-with r3c1: st.plotly_chart(fig_cv, use_container_width=True)
-with r3c2: st.plotly_chart(fig_pv, use_container_width=True)
+with r3c1: st.plotly_chart(fig_cv, width='stretch')
+with r3c2: st.plotly_chart(fig_pv, width='stretch')
 
 # ============================================================================ #
 #  ── SECTION E: Performance Summary Table ──────────────────────────────────  #
@@ -917,6 +1288,7 @@ summary_data = {
         "Controllable", "Observable",
         "Linearisation Valid",
         "Feedback Linearisation", "Trajectory Profiler",
+        "Safety Filter (MPSC)",
     ],
     "Value": [
         controller_type, estimator_type,
@@ -934,6 +1306,8 @@ summary_data = {
             else f"⚠️ max|θ|={max_theta_deg:.1f}° exceeded limit",
         "ON" if use_fl else "OFF",
         "ON" if use_trajectory else "OFF",
+        (f"intervened {mpsc_int_pct:.0f}% of steps · max Δu {mpsc_max_dv:.1f} N"
+         if use_mpsc else "OFF"),
     ],
     "Status": [
         "—", "—",
@@ -950,6 +1324,7 @@ summary_data = {
         "🟢" if max_theta_deg <= LINEARISATION_LIMIT_DEG else "🟡",
         "🟢" if use_fl else "⚪",
         "🟢" if use_trajectory else "⚪",
+        "🟢" if use_mpsc else "⚪",
     ]
 }
 
