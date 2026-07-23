@@ -156,11 +156,6 @@ Both write interactive Plotly HTML reports next to the scripts.
 not a bug — the app shows a ⏳ note wherever it applies. First GP-MPC run also
 trains the GP once (~20 s), then it's cached per configuration.
 
-The numerical simulation and all telemetry remain at 50 Hz. Only the cart-pole
-animation is uniformly sampled to 25 FPS before it is sent to the browser; its
-first/last state and total playback time are preserved. This keeps the UI payload
-smaller without changing controller results, metrics, or diagnostic plots.
-
 Run the automated checks with the development dependencies:
 
 ```bash

@@ -16,7 +16,6 @@ from simulation import (
     SimulationError,
     run_simulation,
 )
-from visualization import build_animation_sampling
 
 @st.cache_data(show_spinner="Solving iLQR swing-up…")
 def cached_ilqr_solution(m_c, m_p, l, x0, xg, N, q_ang, r_w):
@@ -958,10 +957,8 @@ fig_anim.add_trace(go.Scatter(
 
 fig_anim.update_layout(shapes=get_shapes(p0))
 
-animation_sampling = build_animation_sampling(len(history), dt)
 frames = []
-for i in animation_sampling.indices:
-    state = history[i]
+for i, state in enumerate(history):
     p_i, th_i = state[0], state[2]
     fd = []
     if use_estimator:
@@ -990,9 +987,7 @@ fig_anim.update_layout(
         y=1.08, x=0.5, xanchor="center", yanchor="bottom", direction="left",
         buttons=[
             dict(label="▶ Play", method="animate",
-                 args=[None, {"frame": {
-                                  "duration": animation_sampling.frame_duration_ms,
-                                  "redraw": True},
+                 args=[None, {"frame": {"duration": int(dt*1000), "redraw": True},
                               "fromcurrent": True, "transition": {"duration": 0}}]),
             dict(label="⏸ Pause", method="animate",
                  args=[[None], {"frame": {"duration": 0, "redraw": False},
