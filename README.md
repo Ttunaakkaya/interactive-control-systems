@@ -109,6 +109,12 @@ first-order covariance propagation along the plan, `|pos_k| ≤ L − κ·σ_pos
 recovery box — it has no opinion about performance, only about whether a safe
 future still exists. It wraps whichever brain is active via a checkbox.
 
+**One runtime, every interface.** `simulation.py` owns the complete closed-loop
+runtime — measurement, estimation, reference generation, control, safety
+filtering, saturation, disturbance injection and plant integration. It has no
+Streamlit dependency. The app, tests and future batch benchmarks therefore run
+the same simulation code and consume the same typed `SimulationResult`.
+
 **Honest simplifications, stated as such:** the MPSC terminal box stands in for a
 certified invariant set (a full implementation uses an RPI/CLF set); the robust
 mode is a simplified tube MPC (first-order propagation, no RPI computation); state
@@ -150,17 +156,30 @@ Both write interactive Plotly HTML reports next to the scripts.
 not a bug — the app shows a ⏳ note wherever it applies. First GP-MPC run also
 trains the GP once (~20 s), then it's cached per configuration.
 
+Run the automated checks with the development dependencies:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+The suite covers plant/model consistency, controller and observer invariants,
+MPC/GP-MPC optimizer smoke tests, exact pre/post-refactor runtime parity, runtime
+ordering and failure diagnostics, and a Streamlit rendering smoke test.
+
 ## Repo map
 
 ```
 app.py                          Streamlit app — 8 controllers, safety filter, telemetry
+simulation.py                   UI-independent closed-loop runtime + typed results/metrics
 plant.py                        single symbolic cart-pole model (CasADi) + fast simulator
 controller.py                   PID → ... → GP-MPC → MPSC, one shared interface
 learning.py                     rollout collection + residual GP (2 GPs on velocity states)
 value_iteration.py              discretised DP: grids, interpolation operator, VI, greedy policy
 experiment_phase3.py            model-learning study (Ch. 6.1–6.3)
 experiment_value_iteration.py   DP-rediscovers-LQR study (Ch. 1.2 / 7.3.1)
-requirements.txt
+test_*.py                       regression, invariant, optimizer and UI smoke tests
+requirements.txt / requirements-dev.txt
 ```
 
 ## Where this is going

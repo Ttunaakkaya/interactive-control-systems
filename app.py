@@ -8,6 +8,14 @@ from controller import (PIDController, StateSpaceController, LQRController,
                         TrajectoryPlanner, iLQRController, solve_ilqr, MPCController, GPMPCController, MPSCFilter, RecklessPolicy)
 
 from learning import collect_rollouts, ResidualGP
+from simulation import (
+    ControllerMode,
+    DisturbanceProfile,
+    MEASUREMENT_MATRIX,
+    SimulationConfig,
+    SimulationError,
+    run_simulation,
+)
 
 @st.cache_data(show_spinner="Solving iLQR swing-up…")
 def cached_ilqr_solution(m_c, m_p, l, x0, xg, N, q_ang, r_w):
@@ -653,7 +661,6 @@ if controller_type == "GP-MPC (Learning-Based)":
                                  track_limit=track_limit,
                                  constraint_mode=_mode, kappa=gpmpc_kappa,
                                  w_bound=gpmpc_wbound)
-gpmpc_snapshots = []
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛡️ Safety Filter (MPSC)")
@@ -695,7 +702,6 @@ if use_mpsc:
     mpsc = MPSCFilter(env, horizon=mpsc_horizon, max_force=mpsc_force,
                       track_limit=0.97 * track_limit)
     st.sidebar.caption("⏳ Adds an NLP solve every 20 ms (~50 ms/solve).")
-mpsc_log = []
 
 use_noise = st.sidebar.checkbox("Sensor Noise")
 noise_std = st.sidebar.slider("Angle Noise σ (deg)", 0.01, 5.0, 0.5, 0.01) if use_noise else 0.0
@@ -712,7 +718,6 @@ else:
 #  System Analysis — computed before simulation                                 #
 # ============================================================================ #
 dt               = 0.02
-steps            = int(total_time / dt)
 TARGET_TOLERANCE = 0.05
 # Linearisation validity threshold: sin(20°)/20°(rad) error ≈ 1.9% — standard literature value.
 # Below this angle, sin θ ≈ θ and cos θ ≈ 1 are accurate enough for linear controller synthesis.
@@ -721,7 +726,7 @@ LINEARISATION_LIMIT_DEG = 20.0
 A, B = env.A, env.B
 
 # --- Controllability & Observability ---
-C_obs_mat = np.array([[1, 0, 0, 0], [0, 0, 1, 0]])   # measurement matrix
+C_obs_mat = MEASUREMENT_MATRIX
 n = A.shape[0]
 
 ctrl_matrix = np.hstack([np.linalg.matrix_power(A, i) @ B for i in range(n)])
@@ -746,6 +751,7 @@ else:
 init_theta_rad = np.radians(init_theta_deg)
 current_state  = np.array([init_p, 0.0, init_theta_rad, 0.0])
 use_estimator  = estimator_type != "None"
+estimator      = None
 
 if use_estimator:
     if estimator_type == "Luenberger (Deterministic)":
@@ -763,135 +769,83 @@ if use_estimator:
 planner = TrajectoryPlanner(p_start=init_p, p_end=target_p, duration=move_duration)
 
 # ============================================================================ #
-#  Simulation Loop                                                              #
+#  Streamlit-independent Simulation Runtime                                     #
 # ============================================================================ #
-history     = []
-obs_history = []
-ref_history = []
-u_history   = []
-total_energy       = 0.0
-sat_steps          = 0
-tracking_error_sq  = 0.0   # for RMS tracking error
-terminated  = False
-prev_y      = np.array([init_p, init_theta_rad])
+controller_mode = {
+    "PID (Classical)": ControllerMode.POSITION_PID,
+    "LQI (Integral Optimal Control)": ControllerMode.STATE_WITH_DT,
+}.get(controller_type, ControllerMode.STATE)
 
-for step_idx in range(steps):
-    t = step_idx * dt
-    history.append(current_state.copy())
-    p = current_state[0]
+disturbance_profile = {
+    "None": DisturbanceProfile.NONE,
+    "Impulse Gust (0.1s)": DisturbanceProfile.IMPULSE,
+    "Continuous Wind": DisturbanceProfile.CONTINUOUS,
+}[dist_type]
 
-    # 1. Trajectory
-    if use_trajectory:
-        p_ref, _, a_ref = planner.get_state(t - move_start)
-        u_ff = (m_c + m_p) * a_ref
-    else:
-        p_ref, u_ff = target_p, 0.0
-    ref_history.append(p_ref)
+simulation_config = SimulationConfig(
+    dt=dt,
+    total_time=total_time,
+    target_position=target_p,
+    track_limit=track_limit,
+    controller_mode=controller_mode,
+    use_trajectory=use_trajectory,
+    move_start=move_start,
+    feedback_linearization=use_fl,
+    actuator_saturation=use_saturation,
+    max_force=max_force,
+    sensor_noise_std_deg=noise_std if use_noise else 0.0,
+    disturbance_profile=disturbance_profile,
+    disturbance_magnitude=dist_mag,
+    disturbance_start=dist_time,
+    target_tolerance=TARGET_TOLERANCE,
+    linearization_limit_deg=LINEARISATION_LIMIT_DEG,
+)
 
-    # 2. Measurement
-    y = C_obs_mat @ current_state
-    if use_noise:
-        y[1] += np.radians(np.random.normal(0.0, noise_std))
+try:
+    simulation_result = run_simulation(
+        config=simulation_config,
+        plant=env,
+        controller=controller,
+        initial_state=current_state,
+        estimator=estimator,
+        planner=planner,
+        safety_filter=mpsc if use_mpsc else None,
+        measurement_matrix=C_obs_mat,
+    )
+except SimulationError as exc:
+    st.error(str(exc))
+    with st.expander("Technical details"):
+        st.exception(exc.cause)
+    st.stop()
 
-    # 3. Estimation
-    if use_estimator:
-        u_prev = u_history[-1] if u_history else 0.0
-        x_hat  = estimator.update(u_prev, y, dt)
-        obs_history.append(x_hat.copy())
-        feedback_state = x_hat.copy()
-    else:
-        feedback_state    = np.zeros(4)
-        feedback_state[0] = y[0]
-        feedback_state[2] = y[1]
-        feedback_state[1] = (y[0] - prev_y[0]) / dt
-        feedback_state[3] = (y[1] - prev_y[1]) / dt
-        obs_history.append(feedback_state.copy())
-    prev_y = y.copy()
+# Short aliases keep the presentation layer readable.  The authoritative
+# simulation data and metrics live in SimulationResult.
+history        = simulation_result.states
+obs_history    = simulation_result.estimates
+ref_history    = simulation_result.references
+u_history      = simulation_result.inputs
+gpmpc_snapshots = simulation_result.gpmpc_snapshots
+mpsc_log       = simulation_result.safety_filter_log
+terminated     = simulation_result.terminated
 
-    # Bounds check
-    if abs(p) > track_limit:
-        terminated = True
-        break
+metrics          = simulation_result.metrics
+final_p          = metrics.final_position
+final_theta_deg  = metrics.final_angle_deg
+pos_stable       = metrics.position_stable
+angle_stable     = metrics.angle_stable
+rms_tracking     = metrics.rms_tracking_error
+steady_state_err = metrics.steady_state_error
+total_energy     = metrics.total_energy
+peak_force       = metrics.peak_force
+sat_pct          = metrics.saturation_percentage
+max_theta_deg    = metrics.max_angle_deg
+mpsc_int_pct     = metrics.safety_intervention_percentage
+mpsc_max_dv      = metrics.safety_max_deviation
 
-    # 4. Control
-    if controller_type == "PID (Classical)":
-        u_fb = controller.compute(p_ref, feedback_state[0], dt)
-    elif controller_type == "LQI (Integral Optimal Control)":
-        u_fb = controller.compute(p_ref, feedback_state, dt)
-    else:
-        u_fb = controller.compute(p_ref, feedback_state)
-    u = u_fb + u_ff
-
-    if controller_type == "GP-MPC (Learning-Based)" and getattr(controller, "last_plan", None) is not None:
-        gpmpc_snapshots.append((step_idx, float(feedback_state[0]),
-                                controller.last_plan.copy(),
-                                controller.last_pos_sigma.copy(),
-                                controller.last_tight.copy()))
-
-    # 4.5 Feedback Linearisation
-    if use_fl:
-        th, om = feedback_state[2], feedback_state[3]
-        u += -m_p * l * om**2 * np.sin(th)
-        u -= m_p * env.g * (th - np.sin(th) * np.cos(th))
-
-    # 4.7 Safety filter (MPSC): minimally modify u so a safe tail stays feasible
-    if use_mpsc:
-        _u_prop = float(u)
-        u = mpsc.filter(feedback_state, _u_prop)
-        mpsc_log.append((step_idx, _u_prop, float(u)))
-
-    # 5. Saturation
-    if use_saturation:
-        u_clipped = np.clip(u, -max_force, max_force)
-        if abs(u_clipped) < abs(u):
-            sat_steps += 1
-        u = u_clipped
-
-    total_energy      += u**2 * dt
-    tracking_error_sq += (feedback_state[0] - p_ref)**2 * dt
-    u_history.append(float(u))
-
-    # 5.5 Wind
-    u_eff = u
-    if dist_type == "Impulse Gust (0.1s)" and dist_time <= t <= dist_time + 0.1:
-        u_eff += dist_mag
-    elif dist_type == "Continuous Wind" and t >= dist_time:
-        u_eff += dist_mag
-
-    current_state = env.step(current_state, u_eff, dt)
-
-# ============================================================================ #
-#  Derived Metrics                                                              #
-# ============================================================================ #
-final_p         = history[-1][0]
-final_theta_deg = np.degrees(history[-1][2])
-pos_stable      = abs(final_p - target_p) <= TARGET_TOLERANCE and not terminated
-# 1.0° threshold: below typical encoder resolution (0.1–0.5°) and
-# visually indistinguishable from upright. 0.5° was too tight —
-# numerically stable systems were incorrectly flagged as fallen.
-ANGLE_STABLE_DEG = 1.0
-angle_stable    = abs(final_theta_deg) <= ANGLE_STABLE_DEG
-rms_tracking    = np.sqrt(tracking_error_sq / max(len(history) * dt, 1e-9))
-peak_force      = max(abs(u) for u in u_history) if u_history else 0.0
-sat_pct         = 100.0 * sat_steps / max(len(u_history), 1)
-steady_state_err = abs(final_p - target_p)
-# Max angle reached during the entire simulation — used for linearisation validity.
-# Checking only the initial angle is a logic bug: the pendulum may swing well past
-# the linearisation limit mid-simulation even if it starts small.
-max_theta_deg   = max(abs(np.degrees(s[2])) for s in history)
-
-# --- Safety-filter statistics (when active) ---
-if use_mpsc and mpsc_log:
-    _mpsc_dv     = [abs(a - b) for _, a, b in mpsc_log]
-    mpsc_int_pct = 100.0 * float(np.mean([d > 0.01 for d in _mpsc_dv]))
-    mpsc_max_dv  = float(max(_mpsc_dv))
-else:
-    mpsc_int_pct = mpsc_max_dv = 0.0
-
-time_arr  = np.arange(len(history)) * dt
-p_arr     = [s[0] for s in history]
-theta_arr = [np.degrees(s[2]) for s in history]
-omega_arr = [np.degrees(s[3]) for s in history]
+time_arr  = simulation_result.time
+p_arr     = simulation_result.position
+theta_arr = simulation_result.angle_deg
+omega_arr = simulation_result.angular_velocity_deg
 
 # ============================================================================ #
 #  ── SECTION B: Metrics Row ────────────────────────────────────────────────  #
