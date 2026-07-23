@@ -112,8 +112,8 @@ future still exists. It wraps whichever brain is active via a checkbox.
 **One runtime, every interface.** `simulation.py` owns the complete closed-loop
 runtime — measurement, estimation, reference generation, control, safety
 filtering, saturation, disturbance injection and plant integration. It has no
-Streamlit dependency. The app, tests and future batch benchmarks therefore run
-the same simulation code and consume the same typed `SimulationResult`.
+Streamlit dependency. The app, tests and reproducible batch benchmark therefore
+run the same simulation code and consume the same typed `SimulationResult`.
 
 **Honest simplifications, stated as such:** the MPSC terminal box stands in for a
 certified invariant set (a full implementation uses an RPI/CLF set); the robust
@@ -151,6 +151,36 @@ python experiment_value_iteration.py   # DP vs LQR: value/policy comparison plot
 
 Both write interactive Plotly HTML reports next to the scripts.
 
+### Reproducible benchmark mode
+
+The benchmark CLI runs the same `simulation.py` runtime as the app, but with
+versioned scenarios, explicit random seeds and a fresh plant/controller for every
+case. It intentionally measures simulated control quality rather than wall-clock
+speed, which would depend on the machine and background load.
+
+```bash
+python benchmark.py
+python benchmark.py --suite quick --controllers lqr lqi --seeds 7 11
+python benchmark.py --list
+```
+
+The default protocol compares Pole Placement, LQR and LQI under nominal recovery,
+setpoint tracking, sensor noise and continuous wind. PID and nonlinear MPC are
+available through `--controllers`, but excluded from the default set: PID does not
+observe the pole angle, while MPC makes the otherwise fast suite substantially
+slower.
+
+Each invocation prints an aggregate table and writes:
+
+- `benchmark_results/benchmark_results.json` — complete versioned protocol,
+  package provenance, raw runs, seed aggregates and integrity hashes.
+- `benchmark_results/benchmark_results.csv` — one stable row per
+  scenario/controller/seed for analysis in pandas, Excel or MATLAB.
+
+There is deliberately no timestamp or wall-clock duration in either artifact.
+Running the same protocol in the same dependency environment produces byte-stable
+JSON/CSV and identical trajectory SHA-256 values.
+
 **A note on speed:** MPC, GP-MPC and the safety filter each solve a real NLP every
 20 ms of simulated time, so a 10 s run computes for ~20–25 s. That's the method,
 not a bug — the app shows a ⏳ note wherever it applies. First GP-MPC run also
@@ -165,13 +195,15 @@ python -m pytest -q
 
 The suite covers plant/model consistency, controller and observer invariants,
 MPC/GP-MPC optimizer smoke tests, exact pre/post-refactor runtime parity, runtime
-ordering and failure diagnostics, and a Streamlit rendering smoke test.
+ordering and failure diagnostics, benchmark reproducibility/artifact contracts,
+and a Streamlit rendering smoke test.
 
 ## Repo map
 
 ```
 app.py                          Streamlit app — 8 controllers, safety filter, telemetry
 simulation.py                   UI-independent closed-loop runtime + typed results/metrics
+benchmark.py                    versioned seeded suites + deterministic JSON/CSV reports
 plant.py                        single symbolic cart-pole model (CasADi) + fast simulator
 controller.py                   PID → ... → GP-MPC → MPSC, one shared interface
 learning.py                     rollout collection + residual GP (2 GPs on velocity states)

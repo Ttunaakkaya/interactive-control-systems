@@ -210,3 +210,4 @@ __pycache__/
 *.pyc
 data/
 *.html
+benchmark_results/
