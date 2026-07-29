@@ -104,7 +104,7 @@ class CartPolePlant:
             F_friction = -b_v·ẋ - F_c·sign(ẋ)
         b_v = cart_damping (viscous), F_c = cart_frictionloss (Coulomb).
         Note: friction is the part of the dynamics the nominal model f does NOT
-        know about — i.e. exactly the residual δf a GP will learn in Phase 3/4.
+        know about — i.e. exactly the residual δf learned by the GP model.
         """
         self._viscous = cart_damping
         self._coulomb = cart_frictionloss

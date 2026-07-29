@@ -1,8 +1,33 @@
 """Streamlit multipage presentation and interaction tests."""
 
+import re
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
+
+
+def test_product_copy_is_course_agnostic():
+    repository = Path(__file__).parent
+    product_files = [repository / "README.md"]
+    product_files.extend(
+        path for path in repository.glob("*.py") if not path.name.startswith("test_")
+    )
+    product_files.extend((repository / "pages").glob("*.py"))
+
+    academic_framing = re.compile(
+        r"\b(course|chapter|lecture|lesson|textbook|book)\b|"
+        r"\bch\.\s*\d|§\s*\d|\bTUM\b",
+        re.IGNORECASE,
+    )
+    violations = {
+        str(path.relative_to(repository)): academic_framing.findall(
+            path.read_text(encoding="utf-8")
+        )
+        for path in product_files
+        if academic_framing.search(path.read_text(encoding="utf-8"))
+    }
+
+    assert not violations
 
 
 def test_app_shell_renders_default_live_simulation_without_exceptions():
@@ -57,5 +82,10 @@ def test_theory_guide_renders_all_reference_tabs():
         "Decision guide",
     ]
     assert len(app.dataframe) == 2
+    assert list(app.dataframe[0].value.columns) == [
+        "Concept",
+        "Engineering role",
+        "Implementation",
+    ]
     assert len(app.get("latex")) == 1
     assert r"\delta f &\sim" in app.get("latex")[0].value

@@ -1,5 +1,5 @@
 """
-experiment_phase3.py — Residual model learning showcase (Book Ch. 6).
+experiment_phase3.py — Residual model learning showcase.
 
 Setup:
   TRUE plant    : m_p = 0.10, with rail friction        (reality)
@@ -10,7 +10,7 @@ then show (1) one-step and (2) 40-step prediction: prior vs GP-corrected.
 
 Run from the repo root:   python experiment_phase3.py
 Outputs: phase3_rollout_comparison.html, phase3_residual_parity.html
-Data   : saved to DATA_PATH for reuse in Phase 4 (GP-MPC).
+Data   : saved to DATA_PATH for reuse by the GP-MPC experiment.
 """
 import warnings
 import numpy as np

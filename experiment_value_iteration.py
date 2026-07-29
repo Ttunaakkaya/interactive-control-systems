@@ -1,14 +1,13 @@
 """
 experiment_value_iteration.py — Dynamic Programming rediscovers LQR
-(Book Ch. 1.2 the DP algorithm == Book Ch. 7.3.1 model-based RL)
 
 Discretize the cart-pole around upright (nonuniform sinh grids, dense near
 the origin), run value iteration on the symbolic model F, and compare the
 resulting policy against the analytic LQR:
   (1) near the origin the DP value function matches LQR's quadratic x'Px,
   (2) the greedy DP policy stabilizes the plant like LQR does,
-  (3) the remaining cost gap is the discretization price — the exact reason
-      Ch.2 solves this analytically and Ch.8 turns to function approximation.
+  (3) the remaining cost gap is the discretization price and motivates
+      analytic solutions or function approximation on larger state spaces.
 
 The LQR quadratic is used only to WARM-START V (a pure speed-up: value
 iteration is a gamma-contraction, so the fixed point is unique regardless).

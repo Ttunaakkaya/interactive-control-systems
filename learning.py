@@ -1,5 +1,5 @@
 """
-learning.py — Phase 3: residual model learning (Book Ch. 6, eq. 6.7 / 6.10-6.12)
+learning.py — Gaussian-process residual model learning
 
 True dynamics:      x+ = f(x, u)                     (unknown to the controller)
 Nominal prior:      x+ = f_bar(x, u)                 (wrong mass, no friction)
@@ -88,7 +88,7 @@ class ResidualGP:
         return np.stack(mus, -1), np.stack(sds, -1)
 
     def corrected_step(self, nominal_env, x, u):
-        """f_bar(x,u) + learned residual  (the Ch.6 corrected model, eq. 6.70)."""
+        """Evaluate the nominal transition plus the learned residual."""
         xn = np.array(nominal_env.F(x, [u])).flatten()
         mu, _ = self.predict(x, [u])
         xn[RESIDUAL_DIMS] += mu.flatten()

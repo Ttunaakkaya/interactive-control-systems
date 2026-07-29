@@ -36,7 +36,7 @@ navigation = st.navigation(
             st.Page(
                 "pages/theory_guide.py",
                 title="Theory & Method Guide",
-                icon="📚",
+                icon="🧭",
                 url_path="theory",
             )
         ],

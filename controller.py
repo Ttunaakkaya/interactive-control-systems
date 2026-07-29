@@ -1,5 +1,5 @@
 """
-controller.py — the full control ladder for the cart-pole digital twin.
+controller.py — the complete controller suite for the cart-pole digital twin.
 
 Classical:       PIDController, StateSpaceController (pole placement)
 Optimal:         LQRController, LQIController
@@ -336,7 +336,7 @@ class TrajectoryPlanner:
     
 
 # ============================================================================ #
-#  iLQR — Iterative LQR trajectory optimizer (Book Ch. 4)                       #
+#  iLQR — Iterative LQR trajectory optimizer                                   #
 #  ----------------------------------------------------------------------------#
 #  WHY iLQR: LQR is a LOCAL controller (valid near upright). Swing-up from the  #
 #  hanging position is a global nonlinear maneuver LQR structurally cannot do.  #
@@ -472,7 +472,7 @@ class iLQRController:
 
 
 # ============================================================================ #
-#  MPC — Nonlinear Model Predictive Control (Book Ch. 5)                        #
+#  MPC — Nonlinear Model Predictive Control                                     #
 #  ----------------------------------------------------------------------------#
 #  WHY MPC: LQR applies one fixed gain and constraints are an afterthought      #
 #  (clip after the fact). MPC solves, at EVERY step, a finite-horizon optimal   #
@@ -514,7 +514,7 @@ class MPCController:
         self.N = horizon
         n, m = 4, 1
 
-        # --- terminal cost from DARE at upright (Book Ch. 5 terminal ingredient)
+        # --- terminal cost from DARE at the upright equilibrium
         x_eq, u_eq = ca.DM([0, 0, 0, 0]), ca.DM([0])
         xs = ca.SX.sym("x", 4); us = ca.SX.sym("u", 1); xn = plant.F(xs, us)
         Ad = np.array(ca.Function("A", [xs, us], [ca.jacobian(xn, xs)])(x_eq, u_eq))
@@ -595,7 +595,6 @@ class MPCController:
         
 # ============================================================================ #
 #  GP-MPC — Learning-Based MPC with uncertainty-aware constraint tightening     #
-#  (Book §6.5.1–6.5.2 chance constraints + §5.5 robust tube-MPC, one mechanism) #
 #  ----------------------------------------------------------------------------#
 #  THE IDEA: the controller's prediction model is prior + learned residual,     #
 #      x_{k+1} = f̄(x_k, u_k) + δf(x_k, u_k),                                   #
@@ -619,15 +618,15 @@ class MPCController:
 #  constraint_mode selects where w_k comes from:                                #
 #    'nominal' : TIGHT ≡ 0            (no margin — the honest baseline)         #
 #    'chance'  : w_k = σ_GP(z_k)²     (LEARNED, state-dependent: the model's    #
-#                own uncertainty tightens the constraint — Book 6.5.2)          #
+#                own uncertainty tightens the constraint)                       #
 #    'robust'  : w_k = w̄² fixed      (worst-case assumed bound, state-         #
-#                independent -> conservative — simplified tube MPC, Book 5.5)   #
+#                independent -> conservative — simplified tube MPC)             #
 #                                                                               #
 #  Note the epistemic-vs-exogenous distinction this makes demonstrable:         #
 #  chance mode protects against what the LEARNED MODEL is unsure of; it cannot  #
 #  see disturbances absent from training data (e.g. wind) — robust mode covers  #
 #  those via its a-priori bound. Both margins ride the same parameter channel   #
-#  as the GP means, so the NLP stays Phase-2-sized (~47 ms warm solves).        #
+#  as the GP means, so the NLP stays standard-MPC-sized (~47 ms warm solves).  #
 # ============================================================================ #
 
 

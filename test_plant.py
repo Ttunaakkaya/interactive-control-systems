@@ -1,5 +1,5 @@
 """
-test_plant.py — guards the Phase 0 refactor.
+Regression guards for the shared cart-pole plant model.
 
 Run from the repo root:
     python -m pytest test_plant.py -q       (or just: python test_plant.py)
@@ -39,4 +39,4 @@ def test_simulator_matches_symbolic_model():
 if __name__ == "__main__":
     test_AB_match_nonlinear_jacobian()
     test_simulator_matches_symbolic_model()
-    print("All Phase 0 guards pass: A,B correct and simulator == symbolic model.")
+    print("All plant guards pass: A,B correct and simulator == symbolic model.")

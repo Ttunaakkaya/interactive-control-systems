@@ -89,7 +89,7 @@ st.sidebar.caption(
     "live in Controller Benchmarks."
 )
 
-with st.sidebar.expander("📚 Method Ladder — what this app demonstrates"):
+with st.sidebar.expander("🧭 Method Map — capabilities and trade-offs"):
     render_mermaid("""flowchart LR
         A[PID]-->B[LQR / LQI]
         B-->C[iLQR]
@@ -97,24 +97,22 @@ with st.sidebar.expander("📚 Method Ladder — what this app demonstrates"):
         D-->E[GP-MPC]
         E-->F[+ MPSC 🛡️]""", height=90)
     st.markdown(r"""
-    One plant, one symbolic model, the **full arc of modern control** —
-    each method fixes the previous one's structural limitation:
+    One plant and one symbolic model expose how control methods differ in
+    capability, assumptions and computational cost:
 
-    | Method | Course ref. | Adds |
-    |---|---|---|
-    | PID | baseline | error feedback (SISO) |
-    | Pole Place / LQR / LQI | Ch. 2 | full-state, *optimal* feedback |
-    | iLQR | Ch. 4 | nonlinear trajectory optimisation (swing-up) |
-    | MPC | Ch. 5 | constraints *inside* the optimiser |
-    | + Robust mode | Ch. 5.5 | worst-case constraint tightening |
-    | GP-MPC | Ch. 6 | **learns** model error from data |
-    | + Chance mode | Ch. 6.5 | tightening from *learned* uncertainty |
-    | MPSC filter | safe-RL literature | certifies **any** policy |
+    - **PID** — transparent SISO error-feedback baseline
+    - **Pole Place / LQR / LQI** — full-state stability, optimality and offset rejection
+    - **iLQR** — nonlinear swing-up planning
+    - **MPC** — receding-horizon control with limits inside the optimiser
+    - **Robust mode** — worst-case protection with a fixed uncertainty margin
+    - **GP-MPC** — data-driven model-residual correction
+    - **Chance mode** — data-dependent margins from learned uncertainty
+    - **MPSC filter** — runtime certification of proposed actions
 
-    Offline companions in this repo: **residual-GP model learning**
-    (`experiment_phase3.py`, Ch. 6.1–6.3) and **dynamic programming /
-    value iteration** (`experiment_value_iteration.py`, Ch. 1.2 ≡ Ch. 7.3.1),
-    where DP numerically rediscovers the LQR solution.
+    Supplementary experiments in this repository cover **residual-GP model
+    learning** (`experiment_phase3.py`) and **dynamic programming / value
+    iteration** (`experiment_value_iteration.py`), where DP numerically
+    rediscovers the LQR solution.
     """)
 st.sidebar.markdown("---")
 
@@ -214,7 +212,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
             LS-->|converged|OUT[(x*, u*, K_t)]
             OUT-->EX[Playback + terminal LQR hold]""", height=160)
         st.markdown(r"""
-        **Iterative LQR — nonlinear trajectory optimisation** *(Book Ch. 4)*.
+        **Iterative LQR — nonlinear trajectory optimisation.**
 
         LQR is a *local* law: valid only near the upright equilibrium.
         Swing-up from hanging ($\theta_0 = \pi$) is a **global nonlinear
@@ -230,7 +228,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
         3. Levenberg–Marquardt regularisation on $Q_{uu}$ keeps the step
            well-posed where the quadratic model is non-convex.
 
-        **Key property** *(Book §4.3)*: near the equilibrium the iLQR gains
+        **Key property:** near the equilibrium the iLQR gains
         collapse to the LQR gains — LQR is iLQR's fixed point.
 
         **In this app:** the trajectory is solved **once and cached**; the
@@ -247,8 +245,8 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
             OCP-->|apply u₀ only|P[Plant]
             P-->|x_k+1 · re-plan|Xk""", height=130)
         st.markdown(r"""
-        **Model Predictive Control — receding-horizon optimisation**
-        *(Book Ch. 5)*. Every 20 ms, solve
+        **Model Predictive Control — receding-horizon optimisation.**
+        Every 20 ms, solve
 
         $$\min_{u_{0:N-1}} \sum_{k=0}^{N-1}\bigl(x_k^\top Q x_k + u_k^\top R u_k\bigr) + x_N^\top P\,x_N$$
 
@@ -262,7 +260,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
         gust, LQR+clip destabilises while MPC recovers; under sustained wind
         near the wall, LQR parks past the limit while MPC leans against it.
 
-        **Stability ingredient** *(§5.3)*: the terminal cost $P$ comes from
+        **Stability ingredient:** the terminal cost $P$ comes from
         the DARE at upright — a proxy for the infinite tail. State constraints
         are **soft** (heavily penalised slack) so the solver stays feasible
         when a disturbance shoves the state outside the box.
@@ -283,7 +281,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
             MPC-->P[Plant]
             P-.->D""", height=160)
         st.markdown(r"""
-        **Learning-based MPC** *(Book Ch. 6)* — the controller's prediction
+        **Learning-based MPC** — the controller's prediction
         model is **prior + learned residual**:
 
         $$x_{k+1} = \bar f(x_k,u_k) + \delta f(x_k,u_k), \qquad
@@ -298,16 +296,16 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
 
         **Constraint handling** — the same tightening channel, three sources:
 
-        | Mode | Margin | Book |
+        | Mode | Margin | Assumption |
         |---|---|---|
-        | Nominal | none | — |
-        | Chance | $\kappa\,\sigma_{pos,k}$ from **propagated GP uncertainty** | §6.5.1–6.5.2 |
-        | Robust | fixed worst-case bound $\bar w$ | §5.5 |
+        | Nominal | none | prediction model is sufficiently accurate |
+        | Chance | $\kappa\,\sigma_{pos,k}$ from **propagated GP uncertainty** | learned epistemic uncertainty is calibrated |
+        | Robust | fixed worst-case bound $\bar w$ | model error stays within a declared bound |
 
         $$\Sigma_{k+1} = A_k\Sigma_k A_k^\top + S\,\mathrm{diag}(w_k)\,S^\top,
           \qquad |x_{pos,k}| \le L - \kappa\sqrt{\Sigma_k[0,0]}$$
 
-        **Two lessons this exposes:** (1) the chance margin **shrinks as data
+        **Two engineering trade-offs:** (1) the chance margin **shrinks as data
         accrues** (3 → 30 rollouts slims the 🔮 tube) — learning reduces the
         conservatism robust MPC pays forever; (2) GP-$\sigma$ covers
         *epistemic* uncertainty only — a wind absent from training data is
@@ -445,7 +443,7 @@ elif controller_type == "MPC (Constrained Optimal)":
 
 elif controller_type == "GP-MPC (Learning-Based)":
     st.sidebar.caption("Predicts with **f̄ (wrong prior) + GP residual**, and can tighten "
-                       "constraints by its own uncertainty (Book §6.5) or a fixed bound (§5.5).")
+                       "constraints using learned uncertainty or a fixed bound.")
     prior_err      = st.sidebar.slider("Prior pole-mass error (%)", 0, 200, 100, 10)
     gpmpc_use_gp   = st.sidebar.checkbox("Use learned GP residual", True)
     gpmpc_rollouts = st.sidebar.slider("Training rollouts", 3, 30, 12, 1)
@@ -1000,7 +998,7 @@ if use_mpsc and mpsc_log:
     st.caption(f"Filter intervened on {_pct:.0f}% of steps; max |Δu| = {max(_dv):.1f} N. "
                "Near-zero early intervention with boundary-only action = least-restrictive certification.")
 
-# ---- GP-MPC prediction tube (Book §6.5: uncertainty propagated along the plan) ----
+# ---- GP-MPC prediction tube: uncertainty propagated along the plan ----
 if controller_type == "GP-MPC (Learning-Based)" and gpmpc_snapshots:
     st.subheader("🔮 GP-MPC Prediction Tube")
     st.caption("At each moment, the controller's planned position (orange), its propagated "

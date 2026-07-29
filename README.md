@@ -6,10 +6,9 @@ nonlinear MPC, Gaussian-Process learning-based MPC with chance constraints, and 
 model-predictive safety filter that can certify *any* policy at runtime — including a
 deliberately reckless one.
 
-I built this alongside the *Optimal Control and Decision Making* course at TUM. The
-rule I set myself: every method had to run on the **same plant, the same symbolic
-model, and the same 20 ms control loop**, so that when one controller fails and the
-next one doesn't, the difference is the *method* — not the setup.
+Every method runs on the **same plant, the same symbolic model, and the same 20 ms
+control loop**. When one controller fails and another succeeds, the difference is
+the method—not a hidden change in the simulation setup.
 
 **Live demo:** _add your Streamlit Cloud URL here_
 
@@ -17,25 +16,24 @@ next one doesn't, the difference is the *method* — not the setup.
 
 ## Why this exists
 
-Most control tutorials show you one method on one toy problem. What I wanted to see
-(and show) is the *ladder*: each technique exists because the previous one has a
-structural limitation you can actually watch happen.
+Most control tutorials show one method on one toy problem. This project instead
+compares a broad set of methods on the same plant so their structural strengths,
+limitations and trade-offs become directly observable.
 
-| Method | Course ref. | What it fixes |
+| Method | Core capability | Engineering value |
 |---|---|---|
-| PID | baseline | — (and why SISO fails on a 4-state unstable plant) |
-| Pole Placement / LQR / LQI | Ch. 2 | full-state, *optimal* feedback |
-| iLQR | Ch. 4 | nonlinear trajectory optimisation — swing-up from hanging |
-| MPC | Ch. 5 | constraints live *inside* the optimiser |
-| Robust MPC mode | Ch. 5.5 | worst-case constraint tightening |
-| GP-MPC | Ch. 6 | *learns* the model error from data |
-| Chance-constraint mode | Ch. 6.5 | tightening from the model's own uncertainty |
-| MPSC safety filter | safe-RL literature | certifies any policy, minimally |
+| PID | error feedback | transparent SISO baseline on an unstable plant |
+| Pole Placement / LQR / LQI | full-state feedback | stability, optimality and offset rejection |
+| iLQR | nonlinear trajectory optimisation | swing-up from the hanging state |
+| MPC | constrained receding-horizon control | limits live *inside* the optimiser |
+| Robust MPC mode | fixed uncertainty margin | worst-case constraint protection |
+| GP-MPC | learned model residual | corrects model error from data |
+| Chance-constraint mode | propagated learned uncertainty | data-dependent constraint margins |
+| MPSC safety filter | runtime safety certification | minimally filters any proposed policy |
 
 Two companion studies live outside the app as scripts:
-**residual GP model learning** (`experiment_phase3.py`, Ch. 6.1–6.3) and
-**dynamic programming / value iteration** (`experiment_value_iteration.py`,
-Ch. 1.2 — which is also Ch. 7.3.1, because model-based RL *is* the DP algorithm).
+**residual GP model learning** (`experiment_phase3.py`) and **dynamic programming /
+value iteration** (`experiment_value_iteration.py`).
 
 ---
 
@@ -56,8 +54,8 @@ wall is at 1.50 m (an intentionally infeasible request). Nominal MPC parks **6 m
 the wall** — a real violation. Chance-constrained GP-MPC with an immature model
 (3 training rollouts) stays **14 mm inside**; give it 12 rollouts and the margin
 shrinks toward the wall as the model earns confidence. Robust mode parks **28 cm
-away, forever**, regardless of data. That's the textbook argument — "robustness is
-conservative; learning reduces conservatism" — in one slider sweep. There's an
+away, forever**, regardless of data. This makes the core trade-off—robust protection
+is conservative while learning can reduce conservatism—visible in one slider sweep. There's an
 animated prediction tube in the app (🔮) where you can literally watch the
 uncertainty band get thinner as you add rollouts.
 
@@ -81,9 +79,9 @@ with no performance tax.
 sinh-spaced grids — uniform grids chatter) converges in 621 sweeps and produces a
 value function that correlates **0.98** with LQR's analytic `x'Px` near the origin,
 with the same policy structure. The remaining ~2× closed-loop cost gap is the price
-of discretisation, which is precisely Chapter 1's lesson: DP is exact in principle
-and cursed in practice — the reason the linear case gets solved analytically and the
-deep-RL chapter replaces the table with a network.
+of discretisation: dynamic programming is exact in principle but becomes expensive
+as the state space grows. Analytic linear solutions and function approximation offer
+two different ways around that scaling problem.
 
 ---
 
@@ -94,8 +92,8 @@ in CasADi. From that single source: the continuous `f`, an RK4 discrete map `F`,
 and *exact* Jacobians `A, B` by automatic differentiation. The simulator keeps a
 frozen, fast NumPy path that is asserted bit-consistent with the symbolic model —
 so the controllers and the "reality" they act on can never silently drift apart.
-(Writing the Jacobians by hand first and then checking them against autodiff caught
-a ~10 % error in my own algebra. Lesson absorbed.)
+Checking hand-derived Jacobians against automatic differentiation caught a ~10 %
+algebra error before it could propagate into the controllers.
 
 **Sequential GP-MPC.** Embedding 300 GP kernel terms per timestep into the NLP made
 IPOPT roughly 4× slower, so the GP mean *and* std are evaluated along the
@@ -229,8 +227,8 @@ plant.py                        single symbolic cart-pole model (CasADi) + fast 
 controller.py                   PID → ... → GP-MPC → MPSC, one shared interface
 learning.py                     rollout collection + residual GP (2 GPs on velocity states)
 value_iteration.py              discretised DP: grids, interpolation operator, VI, greedy policy
-experiment_phase3.py            model-learning study (Ch. 6.1–6.3)
-experiment_value_iteration.py   DP-rediscovers-LQR study (Ch. 1.2 / 7.3.1)
+experiment_phase3.py            residual model-learning study
+experiment_value_iteration.py   DP-rediscovers-LQR study
 test_*.py                       regression, invariant, optimizer and UI smoke tests
 requirements.txt / requirements-dev.txt
 ```
@@ -239,9 +237,9 @@ requirements.txt / requirements-dev.txt
 
 Next on my list: a runtime out-of-distribution monitor built on the GP's
 uncertainty signal (the in- vs out-of-distribution σ ratio is already ~14× in the
-Phase-3 data — it wants to become an alarm that triggers the safety filter), and,
-once the RL chapters land, a data-efficiency comparison of GP-MPC against
-DQN/PPO/SAC on the same plant.
+residual-learning data—it can become an alarm that triggers the safety filter),
+followed by a data-efficiency comparison of GP-MPC against DQN/PPO/SAC on the same
+plant.
 
 ---
 

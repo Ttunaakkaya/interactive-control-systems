@@ -1,4 +1,4 @@
-"""Structured theory reference for the control-method ladder."""
+"""Structured reference for control-system concepts and methods."""
 
 import pandas as pd
 import streamlit as st
@@ -11,11 +11,11 @@ render_page_header(
     title="Theory & Method Guide",
     subtitle=(
         "A compact reference for the models and algorithms used in this project. "
-        "Each method is presented with the limitation that motivates the next one."
+        "Each method is presented with its assumptions, strengths and limitations."
     ),
 )
 
-st.sidebar.markdown("### 📚 Guide")
+st.sidebar.markdown("### 🧭 Guide")
 st.sidebar.caption(
     "This page explains the design intent. Use Live Simulation for exploration "
     "and Controller Benchmarks for controlled comparisons."
@@ -43,29 +43,29 @@ overview_tab, foundations_tab, optimal_tab, learning_tab, decision_tab = st.tabs
 )
 
 with overview_tab:
-    render_section_title("One plant, one escalating sequence of methods")
+    render_section_title("Control-method landscape on one shared plant")
     first_row = st.columns(4)
     cards = [
         (
-            "1 · Classical",
+            "Classical feedback",
             "PID",
             "Acts on position error only. Useful as a structural baseline, "
             "but it cannot explicitly regulate all four states.",
         ),
         (
-            "2 · State feedback",
+            "State feedback",
             "Pole Placement · LQR · LQI",
             "Uses the full state. LQR prices performance and effort; LQI "
             "adds integral disturbance rejection.",
         ),
         (
-            "3 · Nonlinear planning",
+            "Nonlinear planning",
             "iLQR · MPC",
             "Plans through nonlinear dynamics. MPC re-plans online and "
             "includes actuator and rail constraints.",
         ),
         (
-            "4 · Learning & assurance",
+            "Learning & assurance",
             "GP-MPC · MPSC",
             "Learns model residuals and exposes uncertainty; a safety filter "
             "certifies proposed actions at runtime.",
@@ -83,49 +83,49 @@ with overview_tab:
 
     st.markdown("")
     st.info(
-        "The project is intentionally cumulative: later methods do not make the "
-        "earlier ones obsolete. They solve different problems and carry different "
-        "computational and modelling assumptions."
+        "These methods are complementary rather than interchangeable. They address "
+        "different engineering problems and carry different computational and modelling "
+        "assumptions."
     )
 
-    render_section_title("Course-to-code map")
+    render_section_title("Concept-to-implementation map")
     st.dataframe(
         [
             {
-                "Topic": "State feedback and observers",
-                "Course": "Ch. 2",
+                "Concept": "State feedback and observers",
+                "Engineering role": "Stabilisation and state reconstruction",
                 "Implementation": (
                     "StateSpaceController, LQRController, LQIController"
                 ),
             },
             {
-                "Topic": "Trajectory optimisation",
-                "Course": "Ch. 4",
+                "Concept": "Trajectory optimisation",
+                "Engineering role": "Nonlinear swing-up planning",
                 "Implementation": "solve_ilqr, iLQRController",
             },
             {
-                "Topic": "Constrained optimal control",
-                "Course": "Ch. 5",
+                "Concept": "Constrained optimal control",
+                "Engineering role": "Receding-horizon constraint handling",
                 "Implementation": "MPCController",
             },
             {
-                "Topic": "Robust constraint tightening",
-                "Course": "Ch. 5.5",
+                "Concept": "Robust constraint tightening",
+                "Engineering role": "Bounded model-error protection",
                 "Implementation": "GPMPCController robust mode",
             },
             {
-                "Topic": "Learning-based control",
-                "Course": "Ch. 6",
+                "Concept": "Learning-based control",
+                "Engineering role": "Data-driven residual correction",
                 "Implementation": "ResidualGP, GPMPCController",
             },
             {
-                "Topic": "Dynamic programming",
-                "Course": "Ch. 1.2 / 7.3.1",
+                "Concept": "Dynamic programming",
+                "Engineering role": "Discrete optimal policy construction",
                 "Implementation": "value_iteration.py",
             },
             {
-                "Topic": "Runtime safety certification",
-                "Course": "Safe-RL literature",
+                "Concept": "Runtime safety certification",
+                "Engineering role": "Safe-action filtering and recovery",
                 "Implementation": "MPSCFilter",
             },
         ],

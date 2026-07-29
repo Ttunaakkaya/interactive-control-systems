@@ -1,6 +1,5 @@
 """
 value_iteration.py — Dynamic Programming on the discretized cart-pole
-(Book Ch. 1.2: the DP algorithm  ==  Book Ch. 7.3.1: model-based RL)
 
 Discretize the state box around upright, evaluate the ONE symbolic model F on
 every (state, action) pair, and run discounted value iteration:
@@ -83,7 +82,7 @@ def value_iteration(P_a, C_a, gamma, iters=12000, tol=2e-4):
 
 class VIPolicy:
     """
-    Online greedy policy w.r.t. the converged value function (Book 7.3.1):
+    Online greedy policy with respect to the converged value function:
         u*(x) = argmin_a [ c(x,a) + gamma * V(F(x,a)) ]
     evaluated at the ACTUAL continuous state with V multilinearly interpolated.
     This removes state-quantization error from the policy: the grid only
