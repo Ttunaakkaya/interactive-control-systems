@@ -2,6 +2,7 @@ streamlit>=1.56
 numpy
 scipy
 plotly
+pandas
 control
 casadi
 scikit-learn

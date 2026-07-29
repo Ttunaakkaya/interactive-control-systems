@@ -701,6 +701,21 @@ def _atomic_write(path: Path, content: str) -> None:
     temporary_path.replace(path)
 
 
+def benchmark_report_csv(report: BenchmarkReport) -> str:
+    """Serialize raw benchmark runs to stable, platform-neutral CSV text."""
+
+    csv_buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        csv_buffer,
+        fieldnames=CSV_FIELDS,
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    for run in report.runs:
+        writer.writerow(run.to_dict())
+    return csv_buffer.getvalue()
+
+
 def write_benchmark_report(
     report: BenchmarkReport,
     output_dir: str | Path,
@@ -715,18 +730,8 @@ def write_benchmark_report(
     json_path = output_path / f"{stem}.json"
     csv_path = output_path / f"{stem}.csv"
 
-    csv_buffer = io.StringIO(newline="")
-    writer = csv.DictWriter(
-        csv_buffer,
-        fieldnames=CSV_FIELDS,
-        lineterminator="\n",
-    )
-    writer.writeheader()
-    for run in report.runs:
-        writer.writerow(run.to_dict())
-
     _atomic_write(json_path, f"{report.to_json()}\n")
-    _atomic_write(csv_path, csv_buffer.getvalue())
+    _atomic_write(csv_path, benchmark_report_csv(report))
     return json_path, csv_path
 
 

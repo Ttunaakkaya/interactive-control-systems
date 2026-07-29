@@ -151,6 +151,23 @@ python experiment_value_iteration.py   # DP vs LQR: value/policy comparison plot
 
 Both write interactive Plotly HTML reports next to the scripts.
 
+### Application structure
+
+The Streamlit interface is split into three focused product surfaces through
+native multipage navigation:
+
+- **Live Simulation** — the full 50 Hz digital twin, controller configuration,
+  animation and diagnostic telemetry.
+- **Controller Benchmarks** — reproducible suite configuration, cached execution,
+  comparison charts, aggregate/raw tables and JSON/CSV downloads.
+- **Theory & Method Guide** — the model, estimator, controller, learning and
+  safety concepts arranged as a progressive engineering reference.
+
+`app.py` is intentionally a small application shell. Page implementations live
+under `pages/`, while `ui_components.py` owns the shared visual system. Numerical
+work remains in `simulation.py` and `benchmark.py`; the pages only orchestrate and
+present those APIs.
+
 ### Reproducible benchmark mode
 
 The benchmark CLI runs the same `simulation.py` runtime as the app, but with
@@ -201,7 +218,11 @@ and a Streamlit rendering smoke test.
 ## Repo map
 
 ```
-app.py                          Streamlit app — 8 controllers, safety filter, telemetry
+app.py                          native Streamlit navigation + application shell
+pages/live_simulation.py        50 Hz digital twin, controls, animation, telemetry
+pages/benchmark_dashboard.py    benchmark runner, charts, tables, JSON/CSV export
+pages/theory_guide.py            structured model/method/safety reference
+ui_components.py                shared styling and page-heading primitives
 simulation.py                   UI-independent closed-loop runtime + typed results/metrics
 benchmark.py                    versioned seeded suites + deterministic JSON/CSV reports
 plant.py                        single symbolic cart-pole model (CasADi) + fast simulator

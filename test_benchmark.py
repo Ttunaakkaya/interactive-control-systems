@@ -5,6 +5,7 @@ import json
 
 from benchmark import (
     SCENARIOS,
+    benchmark_report_csv,
     main,
     run_benchmark,
     run_benchmark_case,
@@ -78,6 +79,7 @@ def test_json_and_csv_artifacts_are_stable(tmp_path):
 
     assert json_path.read_bytes() == first_json
     assert csv_path.read_bytes() == first_csv
+    assert csv_path.read_text(encoding="utf-8") == benchmark_report_csv(report)
     parsed = json.loads(first_json)
     assert parsed["implementation_sha256"] == report.implementation_sha256
     assert parsed["protocol_sha256"] == report.protocol_sha256
