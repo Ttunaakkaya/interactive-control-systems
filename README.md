@@ -162,9 +162,10 @@ native multipage navigation:
   safety concepts arranged as a progressive engineering reference.
 
 `app.py` is intentionally a small application shell. Page implementations live
-under `pages/`, while `ui_components.py` owns the shared visual system. Numerical
-work remains in `simulation.py` and `benchmark.py`; the pages only orchestrate and
-present those APIs.
+under `pages/`, `ui_components.py` owns the shared visual system, and
+`block_diagrams.py` provides network-independent control architecture diagrams.
+Numerical work remains in `simulation.py` and `benchmark.py`; the pages only
+orchestrate and present those APIs.
 
 ### Reproducible benchmark mode
 
@@ -221,6 +222,7 @@ pages/live_simulation.py        50 Hz digital twin, controls, animation, telemet
 pages/benchmark_dashboard.py    benchmark runner, charts, tables, JSON/CSV export
 pages/theory_guide.py            structured model/method/safety reference
 ui_components.py                shared styling and page-heading primitives
+block_diagrams.py               local Graphviz control-architecture diagrams
 simulation.py                   UI-independent closed-loop runtime + typed results/metrics
 benchmark.py                    versioned seeded suites + deterministic JSON/CSV reports
 plant.py                        single symbolic cart-pole model (CasADi) + fast simulator

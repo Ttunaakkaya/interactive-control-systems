@@ -5,6 +5,32 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
+from block_diagrams import BLOCK_DIAGRAMS
+
+
+def test_all_control_block_diagrams_are_local_and_wired_into_the_app():
+    expected = {
+        "method_map",
+        "pid",
+        "lqi",
+        "ilqr",
+        "mpc",
+        "gp_mpc",
+        "reckless",
+        "state_feedback",
+        "feedback_linearisation",
+        "mpsc",
+    }
+    live_page = (Path(__file__).parent / "pages" / "live_simulation.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert set(BLOCK_DIAGRAMS) == expected
+    for name, specification in BLOCK_DIAGRAMS.items():
+        assert "http" not in specification.body.lower()
+        assert "->" in specification.body
+        assert f'render_block_diagram("{name}")' in live_page
+
 
 def test_product_copy_is_course_agnostic():
     repository = Path(__file__).parent
@@ -37,6 +63,7 @@ def test_app_shell_renders_default_live_simulation_without_exceptions():
     assert not app.exception
     assert len(app.metric) == 7
     assert len(app.get("plotly_chart")) >= 7
+    assert len(app.get("graphviz_chart")) == 4
     assert app.selectbox[0].value == "PID (Classical)"
 
 

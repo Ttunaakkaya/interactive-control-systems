@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
 import control as ct
+from block_diagrams import render_block_diagram
 from plant import CartPolePlant
 from controller import (PIDController, StateSpaceController, LQRController,
                         LuenbergerObserver, KalmanFilter, LQIController,
@@ -41,24 +42,6 @@ def train_residual_gp(m_c, m_p, l, prior_scale, coulomb, viscous, n_rollouts=12,
     return ResidualGP(max_points=300).fit(Z, Rres)
 
 # ============================================================================ #
-#  Mermaid renderer                                                             #
-# ============================================================================ #
-def render_mermaid(code: str, height: int = 180):
-    st.iframe(
-        f"""<body style="background-color:#0f172a;margin:0;display:flex;
-            justify-content:center;align-items:center;height:100%;overflow:hidden;">
-        <div class="mermaid">{code}</div>
-        <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{startOnLoad:true,theme:'dark',themeVariables:{{
-            background:'#0f172a',primaryColor:'#1e293b',
-            primaryBorderColor:'#38bdf8',primaryTextColor:'#f8fafc',
-            lineColor:'#94a3b8'}}}});
-        </script></body>""",
-        height=height)
-
-
-# ============================================================================ #
 #  Helpers                                                                      #
 # ============================================================================ #
 PLOT_THEME = dict(
@@ -90,12 +73,7 @@ st.sidebar.caption(
 )
 
 with st.sidebar.expander("🧭 Method Map — capabilities and trade-offs"):
-    render_mermaid("""flowchart LR
-        A[PID]-->B[LQR / LQI]
-        B-->C[iLQR]
-        C-->D[MPC]
-        D-->E[GP-MPC]
-        E-->F[+ MPSC 🛡️]""", height=90)
+    render_block_diagram("method_map")
     st.markdown(r"""
     One plant and one symbolic model expose how control methods differ in
     capability, assumptions and computational cost:
@@ -150,12 +128,7 @@ controller_type = st.sidebar.selectbox(
 
 with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
     if controller_type == "PID (Classical)":
-        render_mermaid("""flowchart LR
-            R((x_ref))-->|+|Sum{Σ}
-            Sum-->|e|C[PID]
-            C-->|u|P[Plant]
-            P-->|x|Sum
-            style Sum fill:#1e293b,stroke:#38bdf8""")
+        render_block_diagram("pid")
         st.markdown(r"""
         **Single-Input Single-Output (SISO) control** — error-driven correction.
 
@@ -174,13 +147,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
         structurally insufficient for a 4-state unstable system.
         """)
     elif controller_type == "LQI (Integral Optimal Control)":
-        render_mermaid("""flowchart LR
-            R((x_ref))-->|+|Sum1{Σ}
-            Sum1-->|e|Int[∫ dt]
-            Int-->|x_i|Kaug[K_aug]
-            P[Plant]-->|x|Kaug
-            Kaug-->|u|P
-            P-->|-|Sum1""")
+        render_block_diagram("lqi")
         st.markdown(r"""
         **LQR augmented with integral action** on cart position error.
 
@@ -204,13 +171,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
         Always verify observer convergence before increasing $Q_{int}$.
         """)
     elif controller_type == "iLQR (Swing-Up)":
-        render_mermaid("""flowchart LR
-            X0((x₀ hanging))-->FP[Forward rollout]
-            FP-->BP[Backward pass<br/>Q-expansion → k, K]
-            BP-->LS[Line search α]
-            LS-->|improved|FP
-            LS-->|converged|OUT[(x*, u*, K_t)]
-            OUT-->EX[Playback + terminal LQR hold]""", height=160)
+        render_block_diagram("ilqr")
         st.markdown(r"""
         **Iterative LQR — nonlinear trajectory optimisation.**
 
@@ -240,10 +201,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
         feedback $K_t$ — re-planning every step fixes this, which is **MPC**.
         """)
     elif controller_type == "MPC (Constrained Optimal)":
-        render_mermaid("""flowchart LR
-            Xk[x_k]-->OCP[Solve N-step OCP<br/>constraints INSIDE]
-            OCP-->|apply u₀ only|P[Plant]
-            P-->|x_k+1 · re-plan|Xk""", height=130)
+        render_block_diagram("mpc")
         st.markdown(r"""
         **Model Predictive Control — receding-horizon optimisation.**
         Every 20 ms, solve
@@ -273,13 +231,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
         unmodelled friction or wrong mass degrade it. That is **GP-MPC**'s cue.
         """)
     elif controller_type == "GP-MPC (Learning-Based)":
-        render_mermaid("""flowchart LR
-            D[(rollout data)]-->GP[GP residual δf<br/>mean μ · std σ]
-            FB[nominal f̄<br/>wrong mass, no friction]-->SUM((+))
-            GP-->SUM
-            SUM-->MPC[MPC prediction<br/>+ κσ tightening]
-            MPC-->P[Plant]
-            P-.->D""", height=160)
+        render_block_diagram("gp_mpc")
         st.markdown(r"""
         **Learning-based MPC** — the controller's prediction
         model is **prior + learned residual**:
@@ -312,10 +264,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
         invisible to it; that is what the robust bound is for.
         """)
     elif controller_type == "Reckless (Safety Demo)":
-        render_mermaid("""flowchart LR
-            POL[Competent balancer<br/>target = wall + Δ]-->|u|P[Plant]
-            P-->|x|POL
-            P-.->|approaching rail end|X[💥]""", height=120)
+        render_block_diagram("reckless")
         st.markdown(r"""
         **A deliberately unsafe policy** — the stand-in for a learned (e.g. RL)
         policy trained **without constraint knowledge**: it balances the pole
@@ -333,13 +282,7 @@ with st.sidebar.expander(f"ℹ️ Theory: {controller_type}"):
         with the filter's counter-force visible in the 🛡️ telemetry chart.
         """)
     else:
-        render_mermaid("""flowchart LR
-            R((x_ref))-->Nr[Nr]
-            Nr-->|Nr·r|Sum{Σ}
-            Sum-->|u|P[Plant]
-            P-->|y|Obs[Observer]
-            Obs-->|x̂|K[-K]
-            K-->|−K·x̂|Sum""")
+        render_block_diagram("state_feedback")
         if controller_type == "Pole Placement (State-Space)":
             st.markdown(r"""
             **Full-state feedback via direct pole placement.**
@@ -471,12 +414,7 @@ elif controller_type == "Reckless (Safety Demo)":
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧬 Nonlinear Dynamics")
 with st.sidebar.expander("ℹ️ Theory: Feedback Linearisation"):
-    render_mermaid("""flowchart LR
-        R((x_ref))-->LC[Linear Controller]
-        LC-->|v|Sum2{Σ}
-        P[Plant]-->|θ,θ̇|NL[Nonlinear\nCancellation]
-        NL-->|Δu|Sum2
-        Sum2-->|u=v+Δu|Plant2[Plant]""", height=150)
+    render_block_diagram("feedback_linearisation")
     st.markdown(r"""
     **The linearisation problem:** all controllers in this simulator are
     designed on the linearised model, which assumes $\sin\theta \approx \theta$
@@ -642,11 +580,7 @@ if controller_type == "GP-MPC (Learning-Based)":
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛡️ Safety Filter (MPSC)")
 with st.sidebar.expander("ℹ️ Theory: Model Predictive Safety Certification"):
-    render_mermaid("""flowchart LR
-        POL[Any policy<br/>PID · LQR · RL …]-->|u_prop|F[MPSC filter<br/>min ‖u−u_prop‖²<br/>s.t. safe tail exists]
-        F-->|u_certified|P[Plant]
-        P-->|x|POL
-        P-->|x|F""", height=140)
+    render_block_diagram("mpsc")
     st.markdown(r"""
     **Certifiably safe control for *any* policy** *(safe-RL literature;
     cf. `safe-control-gym`'s MPSC)*. Each step, given the active
