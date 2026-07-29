@@ -110,6 +110,19 @@ div[data-testid="stDownloadButton"] > button {
   width: 100%;
 }
 [data-testid="stDataFrame"] { border: 1px solid var(--border); border-radius: .6rem; }
+.stTabs [data-testid="stTab"][aria-selected="true"],
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+  border-bottom-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+.stTabs [data-testid="stTab"][aria-selected="true"] p {
+  color: var(--accent) !important;
+}
+.stTabs [data-testid="stTab"] .react-aria-SelectionIndicator,
+.stTabs [data-baseweb="tab-highlight"] {
+  background-color: var(--accent) !important;
+  border-color: var(--accent) !important;
+}
 
 @media (max-width: 760px) {
   .block-container { padding-top: .8rem; }

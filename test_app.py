@@ -57,3 +57,5 @@ def test_theory_guide_renders_all_reference_tabs():
         "Decision guide",
     ]
     assert len(app.dataframe) == 2
+    assert len(app.get("latex")) == 1
+    assert r"\delta f &\sim" in app.get("latex")[0].value

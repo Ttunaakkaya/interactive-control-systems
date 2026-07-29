@@ -294,12 +294,18 @@ simulated time, so complex runs are intentionally slower than wall clock.
 with learning_tab:
     render_section_title("Learning the model residual")
     st.markdown(
+        "GP-MPC keeps a physics prior and learns only its transition error:"
+    )
+    st.latex(
         r"""
-GP-MPC keeps a physics prior and learns only its transition error:
-
-$$x_{k+1}=\bar f(x_k,u_k)+\delta f(x_k,u_k),\qquad
-\delta f\sim\mathcal{GP}(\mu,\sigma^2).$$
-
+        \begin{aligned}
+        x_{k+1} &= \bar f(x_k,u_k) + \delta f(x_k,u_k), \\
+        \delta f &\sim \mathcal{GP}(\mu,\sigma^2).
+        \end{aligned}
+        """
+    )
+    st.markdown(
+        """
 The prior is deliberately imperfect—wrong pole mass and no friction. Two Gaussian
 processes learn the velocity-state residuals from rollout data. The GP mean corrects
 the prediction and its variance exposes where the learned model has little support.
