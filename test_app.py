@@ -27,9 +27,19 @@ def test_all_control_block_diagrams_are_local_and_wired_into_the_app():
 
     assert set(BLOCK_DIAGRAMS) == expected
     for name, specification in BLOCK_DIAGRAMS.items():
+        assert specification.rankdir == "TB"
         assert "http" not in specification.body.lower()
         assert "->" in specification.body
         assert f'render_block_diagram("{name}")' in live_page
+
+    pid_body = BLOCK_DIAGRAMS["pid"].body
+    assert all(branch in pid_body for branch in ("proportional", "integral", "derivative"))
+    assert "output -> error" in pid_body
+
+    ilqr_body = BLOCK_DIAGRAMS["ilqr"].body
+    assert "Nominal iLQR trajectory" in ilqr_body
+    assert "Time-varying feedback" in ilqr_body
+    assert "output -> deviation" in ilqr_body
 
 
 def test_product_copy_is_course_agnostic():
